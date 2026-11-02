@@ -60,6 +60,87 @@ def _stem(value: str) -> str:
     return str(value).removesuffix(".cut").removesuffix(".event.dat").removesuffix(".dat")
 
 
+def source_peak_entries(entry: dict) -> list[dict]:
+    """Expand a source's independent lines, preserving single-line configs.
+
+    ``peaks`` replaces the source-level energy/window/anchor. Other source
+    settings, including background and exposure selection, are inherited.
+    """
+    if "peaks" not in entry:
+        peaks = [entry]
+        inherited = {}
+    else:
+        peaks = entry["peaks"]
+        if not isinstance(peaks, list) or not 1 <= len(peaks) <= 64:
+            raise ValueError("source peaks must contain 1–64 independent energy lines")
+        inherited = {key: value for key, value in entry.items()
+                     if key not in ("peaks", "energy_keV", "fit_range", "center_anchor", "window_guard")}
+        if entry.get("fit_mode") == "doublet" and "fit_range" in entry:
+            inherited["fit_range"] = copy.deepcopy(entry["fit_range"])
+    result = []
+    for peak in peaks:
+        if not isinstance(peak, dict):
+            raise ValueError("Each source peak must be a configuration object")
+        line = {**copy.deepcopy(inherited), **copy.deepcopy(peak)}
+        energy = line.get("energy_keV")
+        if isinstance(energy, bool) or not isinstance(energy, (int, float)) or not math.isfinite(energy) or energy <= 0:
+            raise ValueError("Each source peak requires a finite positive energy_keV")
+        if any(math.isclose(energy, old["energy_keV"], rel_tol=1e-10, abs_tol=1e-8) for old in result):
+            raise ValueError(f"Duplicate source peak energy {energy:g} keV")
+        line["energy_keV"] = float(energy)
+        if "fit_range" in line:
+            windows = line["fit_range"]
+            if not isinstance(windows, list) or len(windows) != 4:
+                raise ValueError(f"Source peak {energy:g} keV fit_range requires four channel slots")
+            for window in windows:
+                if window is None:
+                    continue
+                if (not isinstance(window, (list, tuple)) or len(window) != 2
+                        or any(isinstance(value, bool) or not isinstance(value, (int, float))
+                               or not math.isfinite(value) for value in window)
+                        or not 0 <= window[0] < window[1]):
+                    raise ValueError(f"Invalid source peak {energy:g} keV fit_range")
+        if "center_anchor" in line:
+            anchors = line["center_anchor"]
+            if not isinstance(anchors, list) or len(anchors) != 4:
+                raise ValueError(f"Source peak {energy:g} keV center_anchor requires four channel slots")
+            for ch, center in enumerate(anchors):
+                if center is None:
+                    continue
+                if (isinstance(center, bool) or not isinstance(center, (int, float))
+                        or not math.isfinite(center) or center <= 0):
+                    raise ValueError(f"Invalid source peak {energy:g} keV center_anchor")
+                window = line.get("fit_range", [None] * 4)[ch]
+                if window is not None and not window[0] <= center <= window[1]:
+                    raise ValueError(f"Source peak {energy:g} keV CH{ch} center_anchor is outside fit_range")
+        result.append(line)
+    if entry.get("fit_mode") == "doublet":
+        if (len(result) != 2 or any(line.get("background", "lin") != "lin" for line in result)
+                or any(len(line.get("center_anchor", [])) != 4
+                       or any(center is None for center in line["center_anchor"]) for line in result)):
+            raise ValueError("doublet requires two lines, linear continuum and four independent center anchors per line")
+    return result
+
+
+def sync_source_lines(profile: dict) -> None:
+    """Keep native YAML lines and discovery metadata in the same preset."""
+    if not is_contract(profile):
+        return
+    sources = profile.get("analysis_config", {}).get("ec_l1", {}).get("source", {})
+    discovery = profile.setdefault("discovery", {})
+    definitions = discovery.setdefault("sources", [])
+    for name, entry in sources.items():
+        energies = [line["energy_keV"] for line in source_peak_entries(entry)]
+        definition = next((row for row in definitions if row["name"] == name), None)
+        if definition is None:
+            definition = {"name": name, "aliases": []}
+            definitions.append(definition)
+        definition["energies_keV"] = energies
+        for row in discovery.get("manifest", []):
+            if row.get("kind") == "source" and row.get("source") == name:
+                row["peak_energies_keV"] = energies.copy()
+
+
 def build_acquisition_profile(
     payload: str, raw_root: Path | str, *, source_payload: str | None = None,
     base_profile: dict | None = None, verify_files: bool = True,
@@ -104,14 +185,15 @@ def build_acquisition_profile(
             primary = entry.get("primary_ids", entry.get("files", []))
             background = entry.get("background_ids", entry.get("background_files", []))
             if kind == "source":
-                sources.append({"name": name, "aliases": [], "energies_keV": [float(entry["energy_keV"])]})
+                energies = [line["energy_keV"] for line in source_peak_entries(entry)]
+                sources.append({"name": name, "aliases": [], "energies_keV": energies})
             for slot, ref in enumerate(primary):
                 item = {"kind": kind, "bias": float(entry.get("selection", {}).get("hk_bias", 28.5)),
                         "analysis_id": str(name), "background_ids": list(background)}
                 if kind == "xray":
                     item.update(channel=slot, energy_keV=float(entry["energy_keV"]))
                 else:
-                    item.update(source=name, peak_energies_keV=[float(entry["energy_keV"])])
+                    item.update(source=name, peak_energies_keV=energies.copy())
                 analyses[ref] = item
             if kind == "source":
                 for ref in background:
@@ -204,7 +286,7 @@ def canonical_point(record: dict, kind: str) -> dict:
         point["window"] = [lo, hi] if lo is not None and hi is not None else None
     if "background" not in point:
         point["background"] = {"lin + gaus": "lin", "exp + gaus": "exp", "quad + gaus": "quad",
-                               "gaus + gaus": "gaus"}.get(point.get("fit_mode"))
+                               "gaus + gaus": "gaus", "gaus + gaus + lin": "gaus+lin"}.get(point.get("fit_mode"))
     if "background_params" not in point and point.get("center") is not None:
         center = point["center"]
         fitted = point.get("model_parameters", {})
@@ -226,6 +308,14 @@ def canonical_point(record: dict, kind: str) -> dict:
         elif point["background"] == "gaus" and fitted.get("bk_sigma", 0.) > 0:
             sigma = fitted["bk_sigma"]
             point["background_params"] = {
+                "bg_amplitude": fitted["bk_amplitude"] / (sigma * np.sqrt(2 * np.pi)),
+                "bg_center": fitted["bk_center"], "bg_sigma": sigma,
+            }
+        elif point["background"] == "gaus+lin" and fitted.get("bk_sigma", 0.) > 0:
+            sigma = fitted["bk_sigma"]
+            point["background_params"] = {
+                "b0": fitted.get("b_intercept", 0.) + fitted.get("b_slope", 0.) * center,
+                "b1": fitted.get("b_slope", 0.),
                 "bg_amplitude": fitted["bk_amplitude"] / (sigma * np.sqrt(2 * np.pi)),
                 "bg_center": fitted["bk_center"], "bg_sigma": sigma,
             }

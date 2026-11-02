@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 import re
 
+from ..common.cali_contract import is_contract, source_peak_entries
 from ..common.spectral_models import photopeak_channels
 from ..common.utils import read_json, read_parquet_metadata
 from .acquisition import default_profile
@@ -186,6 +187,21 @@ def catalog(adapter, payload, product_root, *, profile=None, config=None):
             lo, hi = record.get("lo"), record.get("hi")
             if isinstance(lo, (int, float)) and isinstance(hi, (int, float)) and math.isfinite(lo) and math.isfinite(hi) and 0 <= lo < hi:
                 line["windows"][channel] = {"lo": float(lo), "hi": float(hi)}
+    if is_contract(profile):
+        analyses = profile.get("analysis_config", {}).get("ec_l1", {}).get("source", {})
+        for entry in spectra.values():
+            configured = analyses.get(entry["source_name"])
+            if not configured:
+                continue
+            lines = []
+            for item in source_peak_entries(configured):
+                windows = {str(ch): {"lo": float(window[0]), "hi": float(window[1])}
+                           for ch, window in enumerate(item.get("fit_range", [])) if window is not None}
+                centers = {str(ch): float(center) for ch, center in enumerate(item.get("center_anchor", []))
+                           if center is not None}
+                lines.append({"energy_keV": item["energy_keV"], "windows": windows,
+                              "centers": centers, "origin": "preset"})
+            entry["lines"] = lines
     for key, saved in peak_sets.items():
         entry = spectra.setdefault(key, {"energy_key": key, "signal_file": None, "source_path": None,
                                         "source_files": [], "available_channels": channels, "_records": []})

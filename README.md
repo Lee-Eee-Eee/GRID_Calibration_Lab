@@ -23,6 +23,8 @@
 
 14B / 15B 已接入 `cali_proc 0.5` 的文件表和四份分析配置。服务器计算与本地界面转发见 [GRID 部署](docs/server_workbench.md)，真实数据验证见 [适配验收](docs/contract_migration_validation.md)。
 
+15B Co60 的 1173.228 / 1332.492 keV 双峰已保存为配置 v2，原版保留比较；[双峰复核](docs/co60_doublet_validation.md)记录谱拟合和 EC 残差。服务器数据目录可直接关联个人试算、配置版本和产品索引。
+
 ![TB 三维曲面与原谱联动](docs/images/tb-surface.jpg)
 
 <p align="center"><sub>TB L2 三维曲面、工况能谱与残差联动 · 14B 交互演示</sub></p>

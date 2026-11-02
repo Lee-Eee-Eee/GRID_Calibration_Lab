@@ -211,6 +211,9 @@ def _background(point: dict, x: np.ndarray) -> np.ndarray:
         return params.get("b0", 0.) + params.get("b1", 0.) * shifted + params.get("b2", 0.) * shifted**2
     if mode == "exp":
         return params.get("b0", 0.) * np.exp(-params.get("k", 0.) * (x - point["window"][0]))
-    if mode == "gaus" and params.get("bg_sigma", 0.) > 0:
-        return params.get("bg_amplitude", 0.) * np.exp(-.5 * ((x - params["bg_center"]) / params["bg_sigma"])**2)
+    if mode in ("gaus", "gaus+lin") and params.get("bg_sigma", 0.) > 0:
+        background = params.get("bg_amplitude", 0.) * np.exp(-.5 * ((x - params["bg_center"]) / params["bg_sigma"])**2)
+        if mode == "gaus+lin":
+            background += params.get("b0", 0.) + params.get("b1", 0.) * shifted
+        return background
     return np.zeros_like(x, dtype=float)

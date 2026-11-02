@@ -399,6 +399,15 @@ class ECInspector:
             fitted_background = QuadraticModel().eval(
                 x=fit_x, a=model_params["b_a"], b=model_params["b_b"], c=model_params["b_c"]
             )
+        elif model_params and mode in ("gaus + gaus", "gaus + gaus + lin"):
+            fitted_background = GaussianModel().eval(
+                x=fit_x, amplitude=model_params["bk_amplitude"], center=model_params["bk_center"],
+                sigma=model_params["bk_sigma"],
+            )
+            if mode == "gaus + gaus + lin":
+                fitted_background += LinearModel().eval(
+                    x=fit_x, slope=model_params["b_slope"], intercept=model_params["b_intercept"],
+                )
         metadata = input_evidence["signal"]["tb_correction"]
         curve_notes = []
         if not exact_curve:

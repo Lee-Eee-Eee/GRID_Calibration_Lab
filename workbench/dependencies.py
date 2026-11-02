@@ -60,7 +60,12 @@ def snapshot(package: dict, run_root: Path) -> dict:
     if not target.exists():
         shutil.copy2(source, target)
     if package.get("meta_path"):
-        shutil.copy2(package["meta_path"], target.with_suffix(".meta.json"))
+        meta_source = Path(package["meta_path"])
+        meta_target = target.with_suffix(".meta.json")
+        if not meta_target.exists():
+            shutil.copy2(meta_source, meta_target)
+        elif meta_source.read_bytes() != meta_target.read_bytes():
+            raise ValueError("TB L2 快照的配套 Meta 已存在且内容不同")
     if hashlib.sha256(target.read_bytes()).hexdigest() != package["sha256"]:
         raise ValueError("TB L2 快照校验失败，请重新选择文件")
     frozen = {**package, "path": str(target), "source_path": package.get("source_path", str(source))}

@@ -74,6 +74,39 @@ test('the controller starts without decorative pipeline help paragraphs', () => 
   assert.doesNotThrow(() => controller({ absentSelectors: ['.pipeline-menu p'] }));
 });
 
+test('data selection lists matching personal trials and continues the chosen trial', async () => {
+  const ui = controller();
+  ui.run(`
+    registryDatasetSelection = async () => {};
+    state.datasets = [{id:'shared-15',payload:'15B',raw_dir:'/shared/15B',product_dir:'/shared/products/15B',personal_runs:[
+      {id:'old',name:'Original',products_dir:'/home/user/runs/old/products/15B',acquisition_preset:{version:1}},
+      {id:'new',name:'Doublet',products_dir:'/home/user/runs/new/products/15B',acquisition_preset:{version:2}}
+    ]}];
+    $('dataset-select').value = 'shared-15'; updateSelectedDataset();
+    state.opened = null; openRun = async id => { state.opened = id; };
+    $('dataset-run-select').value = 'new';
+  `);
+  assert.equal(ui.element('dataset-saved-runs').hidden, false);
+  assert.deepEqual(ui.element('dataset-run-select').options.map(row => row.text), ['Original · v1', 'Doublet · v2']);
+  await ui.element('dataset-open-run').listeners.click[0]();
+  assert.equal(ui.run('state.opened'), 'new');
+  assert.equal(ui.run('state.datasets[0].product_dir'), '/shared/products/15B');
+});
+
+test('refreshing personal trial versions preserves the current directory and payload draft', async () => {
+  const ui = controller();
+  await ui.run(`
+    state.datasets = [{id:'one',source_id:'source-15',raw_dir:'/shared/15B',product_dir:'/shared/products/15B'}];
+    $('dataset-select').value = 'one'; $('new-run-dialog').open = true;
+    $('new-run-payload').value = 'renamed-15'; $('dataset-raw-dir').value = '/shared/15B';
+    api = async () => ({runs:[{id:'v2-run',name:'Doublet',source_id:'source-15',products_dir:'/home/user/new',acquisition_preset:{version:2}}]});
+    refreshPersonalTrials();
+  `);
+  assert.equal(ui.element('dataset-run-select').options[0].text, 'Doublet · v2');
+  assert.equal(ui.element('new-run-payload').value, 'renamed-15');
+  assert.equal(ui.element('dataset-raw-dir').value, '/shared/15B');
+});
+
 test('TB layer switch while rendering cannot select a point from the old layer', async () => {
   const ui = controller();
   ui.run(`
@@ -1323,6 +1356,17 @@ test('full-source view labels only configured ADC windows on the current physica
   assert.equal(overlay.shapes.length,1);
   assert.equal(overlay.shapes[0].x0,300);
   assert.match(overlay.annotations[1].text,/1,?274\.5/);
+});
+
+test('doublet labels remain separate when both lines share a joint window', () => {
+  const ui=controller();
+  ui.run(`state.layer='EC_L2';state.channel=0;state.ecFullSource=true;state.point={stem:'src_Co60',E:1173.228};
+    state.ecPeakConfig={spectra:[{energy_key:'src_Co60',lines:[
+      {energy_keV:1173.228,windows:{'0':{lo:5800,hi:8500}},centers:{'0':6713}},
+      {energy_keV:1332.492,windows:{'0':{lo:5800,hi:8500}},centers:{'0':7695}}
+    ]}]};`);
+  const overlay=JSON.parse(ui.run('JSON.stringify(ecSourceWindowOverlays())'));
+  assert.deepEqual(overlay.annotations.map(item=>item.x),[6713,7695]);
 });
 
 test('source workflow maps grouped peak identities to the selected observation and channel', async () => {

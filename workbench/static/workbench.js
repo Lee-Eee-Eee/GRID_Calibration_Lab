@@ -892,7 +892,8 @@ function ecSourceWindowOverlays() {
     if (!(Number.isFinite(bounds?.lo) && Number.isFinite(bounds?.hi) && bounds.hi>bounds.lo)) continue;
     const selected=Number(line.energy_keV)===Number(state.point?.E);
     if(!selected) shapes.push({type:"rect",xref:"x",yref:"paper",x0:bounds.lo,x1:bounds.hi,y0:0,y1:1,fillcolor:"rgba(107,132,166,.04)",line:{color:"#b8c5d6",width:1,dash:"dot"},layer:"below"});
-    annotations.push({x:(bounds.lo+bounds.hi)/2,y:1,xref:"x",yref:"paper",text:`${number(line.energy_keV,3)} keV`,showarrow:false,yanchor:"top",yshift:-5,font:{...chartFont,size:10,color:selected?chartColors.fit:"#728294"},bgcolor:"rgba(255,255,255,.85)"});
+    const center = point?.center ?? line.centers?.[String(state.channel)];
+    annotations.push({x:Number.isFinite(center) ? center : (bounds.lo+bounds.hi)/2,y:1,xref:"x",yref:"paper",text:`${number(line.energy_keV,3)} keV`,showarrow:false,yanchor:"top",yshift:-5,font:{...chartFont,size:10,color:selected?chartColors.fit:"#728294"},bgcolor:"rgba(255,255,255,.85)"});
   }
   return {shapes,annotations};
 }
@@ -1376,6 +1377,7 @@ function openCreateDialog(payload = $("payload").value) {
   $("dataset-raw-dir").placeholder = state.bootstrap?.defaults?.raw_dir || "留空使用默认数据目录";
   $("dataset-product-dir").placeholder = state.bootstrap?.defaults?.product_dir || "留空使用默认 products 目录";
   $("dataset-create-error").hidden = true; $("new-run-dialog").showModal(); sourceLibraryRefresh().catch(datasetError);
+  refreshPersonalTrials().catch(datasetError);
   if (state.datasetPathsDirty) datasetPathsChanged();
 }
 function datasetPathsChanged() {
@@ -1855,7 +1857,35 @@ function renderDatasetOptions(payload) {
   const selected = payload ? state.datasets.find((d) => datasetMatchesPayload(d,payload)) : state.datasets[0]; if (selected) select.value = selected.id; else select.append(new Option("没有可用数据集，请扫描目录", ""));
   updateSelectedDataset();
 }
-function updateSelectedDataset() { const dataset = state.datasets.find((d) => d.id === $("dataset-select").value); const holder = clear($("dataset-paths")); if (!dataset) return; $("new-run-payload").value = dataset.payload || dataset.source_payload || ""; holder.append(node("span", "", `数据：${dataset.raw_dir || "未选择"}`), node("span", "", `产品：${dataset.product_dir || "未选择"}`)); registryDatasetSelection().catch(datasetError); }
+function updateSelectedDataset() {
+  const dataset = state.datasets.find((d) => d.id === $("dataset-select").value), holder = clear($("dataset-paths"));
+  renderPersonalTrials(dataset);
+  if (!dataset) return;
+  $("new-run-payload").value = dataset.payload || dataset.source_payload || "";
+  holder.append(node("span", "", `数据：${dataset.raw_dir || "未选择"}`), node("span", "", `产品：${dataset.product_dir || "未选择"}`));
+  registryDatasetSelection().catch(datasetError);
+}
+function renderPersonalTrials(dataset) {
+  const previous = $("dataset-run-select").value;
+  const saved = clear($("dataset-run-select")), runs = dataset?.personal_runs || [];
+  $("dataset-saved-runs").hidden = !runs.length;
+  for (const run of runs) {
+    const version = run.acquisition_preset?.version;
+    const option = new Option(`${run.name || run.id}${version ? ` · v${version}` : ""}`, run.id);
+    option.title = run.products_dir; saved.append(option);
+  }
+  if (runs.some(run => run.id === previous)) saved.value = previous;
+}
+async function refreshPersonalTrials() {
+  const token = state.personalIndexToken = (state.personalIndexToken || 0) + 1;
+  const index = await api("/api/workspace-index");
+  if (token !== state.personalIndexToken) return;
+  for (const dataset of state.datasets) dataset.personal_runs = (index.runs || []).filter(run =>
+    (dataset.source_id && run.source_id === dataset.source_id) ||
+    (dataset.raw_dir && run.source?.raw_dir === dataset.raw_dir) || run.products_dir === dataset.product_dir);
+  if ($("new-run-dialog").open && !state.datasetPathsDirty)
+    renderPersonalTrials(state.datasets.find(dataset => dataset.id === $("dataset-select").value));
+}
 function datasetError(error) { $("dataset-scan-state").textContent = error.message; $("dataset-scan-state").className = "scan-error"; }
 async function scanDatasets(preferredPayload) { const button = $("scan-datasets"), submit = $("new-run-form").querySelector('[type="submit"]'), token = (state.datasetScanToken || 0) + 1; state.datasetScanToken = token; state.datasets = []; clear($("dataset-select")).append(new Option("正在扫描目录…", "")); clear($("dataset-paths")); button.disabled = true; submit.disabled = true; $("dataset-scan-state").textContent = "正在扫描目录…"; try { const result = await api("/api/datasets/scan", { method: "POST", body: { raw_dir: $("dataset-raw-dir").value.trim() || undefined, product_dir: $("dataset-product-dir").value.trim() || undefined } }); if (token !== state.datasetScanToken) return; state.datasets = result.datasets || []; state.datasetPathsDirty = false; renderDatasetOptions(typeof preferredPayload === "string" ? preferredPayload : undefined); $("dataset-scan-state").textContent = `找到 ${state.datasets.length} 个数据集`; $("dataset-scan-state").className = ""; if (!state.datasets.length) throw new Error("未发现可识别的数据或产品。请检查目录层级。"); } catch (error) { if (token !== state.datasetScanToken) return; throw error; } finally { if (token === state.datasetScanToken) { button.disabled = false; submit.disabled = !state.datasets.length || state.datasetPathsDirty; } } }
 
@@ -2165,6 +2195,12 @@ $("cancel-new-run").addEventListener("click", () => $("new-run-dialog").close())
 $("new-run-form").addEventListener("submit", createRun);
 $("new-run-form").addEventListener("input", () => { $("dataset-create-error").hidden=true; });
 $("run-select").addEventListener("change", handleError((event) => openRun(event.target.value)));
+$("dataset-open-run").addEventListener("click", handleError(async () => {
+  const id = $("dataset-run-select").value;
+  if (!id) return;
+  $("new-run-dialog").close();
+  await openRun(id);
+}));
 $("payload").addEventListener("change", handleError(async (event) => { const payload = event.target.value; const remembered = localStorage.getItem(`grid-workbench-payload:${payload}`); const runs = (state.bootstrap.runs || []).filter(item => item.payload === payload); const run = runs.find(item => item.id === remembered) || runs[0]; if (run) await openRun(run.id); else openCreateDialog(payload); }));
 $("channel").addEventListener("change", handleError(event => selectChannel(Number(event.target.value))));
 $("l1-file-search").addEventListener("input", renderL1Workspace);

@@ -84,7 +84,10 @@ def prepare_profile(workspace, profile=None, payload_profile=None):
                 raise ValueError(f"{name}.yaml 需要配置对象")
             profile["analysis_config"][name] = value
     if isinstance(profile, dict) and profile.get("analysis_contract") == "cali_proc@0.5":
+        from ..common.cali_contract import sync_source_lines
+
         profile = copy.deepcopy(profile)
+        sync_source_lines(profile)
         shared = profile.get("analysis_config", {}).get("tb_l1", {}).get("shared", {})
         histogram = profile.setdefault("fitting", {}).setdefault("tb_histogram", {})
         histogram.update(min=0., max=float(shared.get("adc_max", histogram.get("max", 16384.))),

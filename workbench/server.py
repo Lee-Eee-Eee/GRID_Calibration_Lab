@@ -111,6 +111,8 @@ def make_handler(workbench):
                     return self._json(200, workbench.acquisition_defaults(query.get("profile", [None])[0]))
                 if path == "/api/acquisition/presets":
                     return self._json(200, workbench.acquisition_presets(query.get("payload", [None])[0]))
+                if path == "/api/workspace-index":
+                    return self._json(200, workbench.personal_index())
                 if len(parts) == 4 and parts[:3] == ["api", "acquisition", "presets"]:
                     return self._json(
                         200, workbench.acquisition_preset(parts[3], query.get("version", [None])[0])

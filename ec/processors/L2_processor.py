@@ -13,6 +13,7 @@ import pandas as pd
 from lmfit.models import ExponentialModel, GaussianModel, LinearModel, QuadraticModel
 from scipy.signal import savgol_filter
 
+from ...common.cali_contract import source_peak_entries
 from ...common.peak_finding import detect_photopeak, detect_photopeak_for_fit, fit_quality
 from ...common.spectral_models import pending_peak_record, photopeak_channels, unsupported_spectral_model
 from ...common.utils import (
@@ -43,6 +44,7 @@ class ECL2Processor:
         self.analysis_config = bundle.get("ec_l1", bundle)
         self._background_model = "auto"
         self._active_analysis = {}
+        self._active_doublet = None
 
     @staticmethod
     def input_evidence(path: Path) -> dict[str, Any]:
@@ -269,11 +271,17 @@ class ECL2Processor:
                 first = ch_map[selected_channels[0]]
                 data_type = first["data_type"]
                 source_name = first.get("source_name")
+                configured_analysis = self.analysis_config.get("source" if data_type == "src" else "xray", {}).get(
+                    source_name if data_type == "src" else energy_key.removesuffix("keV"), {})
+                source_lines = (source_peak_entries(configured_analysis)
+                                if self.analysis_contract and data_type == "src" and configured_analysis else [])
                 peak_energies = first.get("peak_energies_keV") or [self._energy_sort_key(energy_key)]
                 peak_set = peak_sets.get(energy_key) if data_type == "src" else None
                 if peak_set is not None:
                     peak_energies = [line["energy_keV"] for line in peak_set["lines"]]
                     source_name = peak_set["source_name"]
+                elif source_lines:
+                    peak_energies = [line["energy_keV"] for line in source_lines]
                 elif data_type == "src" and not first.get("peak_energies_keV"):
                     definition = source_definition(source_name)
                     if definition:
@@ -284,8 +292,6 @@ class ECL2Processor:
                     if not peak_energies or not all(np.isfinite(float(value)) and float(value) > 0 for value in peak_energies):
                         raise ValueError(f"Configure finite positive peak energies for source {source_name}")
                 manual_windows = (src_windows.get(source_name, {}) if data_type == "src" and source_name else {})
-                configured_analysis = self.analysis_config.get("source" if data_type == "src" else "xray", {}).get(
-                    source_name if data_type == "src" else energy_key.removesuffix("keV"), {})
                 self._active_analysis = configured_analysis
                 if only_point and not any(np.isclose(float(energy), only_point[2], rtol=1e-10, atol=1e-8)
                                           for energy in peak_energies):
@@ -315,6 +321,10 @@ class ECL2Processor:
                     prev_center: float | None = None
                     prev_energy: float | None = None
                     for peak_E in peaks_to_fit:
+                        payload_line = next((line for line in source_lines
+                                             if np.isclose(line["energy_keV"], float(peak_E), rtol=1e-10, atol=1e-8)),
+                                            configured_analysis if data_type == "x" else {})
+                        self._active_analysis = payload_line
                         configured_line = next((line for line in (peak_set or {}).get("lines", [])
                                                 if np.isclose(line["energy_keV"], float(peak_E), rtol=1e-10, atol=1e-8)), {})
                         peak_window = None
@@ -329,10 +339,10 @@ class ECL2Processor:
                                 peak_window = [xw["lo"], xw["hi"]]
                                 window_source = "packaged"
                         point_id = f"{self.payload_name}:ec:{energy_key}:{ch}:{float(peak_E):g}"
-                        if self.analysis_contract and configured_analysis.get("fit_range"):
-                            anchor = float(configured_analysis.get("energy_keV", peak_E))
-                            if data_type == "x" or abs(anchor - peak_E) < 1.0:
-                                peak_window = configured_analysis["fit_range"][ch]
+                        if self.analysis_contract and payload_line.get("fit_range"):
+                            anchor = float(payload_line.get("energy_keV", peak_E))
+                            if data_type == "x" or np.isclose(anchor, peak_E, rtol=1e-10, atol=1e-8):
+                                peak_window = payload_line["fit_range"][ch]
                                 window_source = "payload_config"
                         manual_override = cfg.get("ec_windows", {}).get(point_id)
                         if manual_override is None:
@@ -355,7 +365,19 @@ class ECL2Processor:
                             window_source = "energy_ratio"
                         detection_config = dict(cfg.get("peak_detection") or {})
                         if self.analysis_contract:
-                            detection_config["background_model"] = configured_analysis.get("background", "lin")
+                            detection_config["background_model"] = payload_line.get("background", configured_analysis.get("background", "lin"))
+                            anchors = payload_line.get("center_anchor", [None] * 4)
+                            if anchors[ch] is not None and detection_config.get("expected_center") is None:
+                                detection_config.update(expected_center=float(anchors[ch]), expected_energy_keV=float(peak_E))
+                            if configured_analysis.get("fit_mode") == "doublet" and payload_line:
+                                if len(source_lines) != 2 or any(line.get("center_anchor", [None] * 4)[ch] is None
+                                                                 for line in source_lines):
+                                    raise ValueError("doublet requires two lines with independent per-channel center_anchor values")
+                                detection_config["doublet"] = {
+                                    "energies_keV": [line["energy_keV"] for line in source_lines],
+                                    "centers": [float(line["center_anchor"][ch]) for line in source_lines],
+                                    "target_energy_keV": float(peak_E),
+                                }
                         if configured_line.get("centers", {}).get(str(ch)) is not None:
                             detection_config.update(expected_center=configured_line["centers"][str(ch)],
                                                     expected_energy_keV=float(peak_E))
@@ -371,6 +393,10 @@ class ECL2Processor:
                         elif prev_center is not None and prev_energy is not None:
                             detection_config["expected_center"] = prev_center * (peak_E / prev_energy)
                         try:
+                            if (self.analysis_contract and data_type == "src" and configured_analysis.get("peaks")
+                                    and not payload_line and peak_window is None
+                                    and detection_config.get("expected_center") is None):
+                                raise ValueError(f"No source peak configuration for {peak_E:g} keV; provide an independent window or center")
                             if (data_type == "src" and len(peak_energies) > 1 and peak_window is None
                                     and detection_config.get("expected_center") is None):
                                 raise RuntimeError(
@@ -440,6 +466,7 @@ class ECL2Processor:
                             "redchi": fit.get("redchi"), "ndf": fit.get("ndf"),
                             "boundary_hits": fit.get("boundary_hits", []),
                             "native_time": fit.get("native_time"),
+                            **{key: fit[key] for key in ("fit_group", "joint_fit") if key in fit},
                             "primary_events": fit["n_events"], "background_events": fit["n_bkg_events"],
                             "background_slot": bkg_ch,
                             "signal_exposure_minutes": signal.get("exposure_minutes"),
@@ -934,6 +961,8 @@ class ECL2Processor:
             model = GaussianModel(prefix="g_") + QuadraticModel(prefix="b_")
         elif mode == "gaus + gaus":
             model = GaussianModel(prefix="g_") + GaussianModel(prefix="bk_")
+        elif mode == "gaus + gaus + lin":
+            model = GaussianModel(prefix="g_") + GaussianModel(prefix="bk_") + LinearModel(prefix="b_")
         else:
             raise ValueError(mode)
 
@@ -961,7 +990,32 @@ class ECL2Processor:
             params["b_b"].set(value=0)
             params["b_c"].set(value=float(np.percentile(y, 20)))
 
-        if self.analysis_contract:
+        if mode == "gaus + gaus + lin":
+            joint = self._active_doublet
+            if joint is None or len(joint.get("centers", [])) != 2:
+                raise ValueError("Joint doublet fit requires two independent center anchors")
+            energies = joint["energies_keV"]
+            target_index = next(i for i, energy in enumerate(energies)
+                                if np.isclose(energy, joint["target_energy_keV"], rtol=1e-10, atol=1e-8))
+            centers = list(map(float, joint["centers"]))
+            if center_anchor is not None:
+                centers[target_index] = float(center_anchor)
+            ordered = sorted(centers)
+            if not float(x[0]) < ordered[0] < ordered[1] < float(x[-1]):
+                raise ValueError("Doublet window must contain both distinct center anchors")
+            midpoint = sum(ordered) / 2
+            for prefix, index in (("g_", target_index), ("bk_", 1 - target_index)):
+                anchor = centers[index]
+                bounds = (float(x[0]), midpoint) if anchor == ordered[0] else (midpoint, float(x[-1]))
+                sigma = min(200., (x[-1] - x[0]) / 8)
+                params[prefix + "center"].set(value=anchor, min=bounds[0], max=bounds[1])
+                params[prefix + "sigma"].set(value=sigma, min=max(bin_width / 2, 1.),
+                                              max=min(450., (x[-1] - x[0]) / 3))
+                params[prefix + "amplitude"].set(value=max(float(np.max(y)), np.finfo(float).eps)
+                                                * sigma * np.sqrt(2 * np.pi), min=0)
+            params["b_intercept"].set(value=float(np.min(y)), min=-np.inf)
+            params["b_slope"].set(value=0)
+        elif self.analysis_contract:
             # Match the configured native fit: initialize the peak from the
             # right half when a local continuum/overlapping line is present,
             # then estimate that background from the residual. Peak-finder
@@ -1006,20 +1060,24 @@ class ECL2Processor:
         center_anchor: float | None = None,
     ):
         candidates = []
+        failures = []
         modes = ("gaus", "lin + gaus", "exp + gaus")
         if self.analysis_contract:
             modes = ({None: "gaus", "lin": "lin + gaus", "exp": "exp + gaus",
                       "quad": "quad + gaus", "gaus": "gaus + gaus"}.get(self._background_model, "lin + gaus"),)
+            if self._active_doublet is not None:
+                modes = ("gaus + gaus + lin",)
         for mode in modes:
             try:
                 result, rsq = self._fit_with_mode(mode, x, y, err, peak_x, lo, hi, bin_width,
                                                 sigma_guess, center_anchor)
                 criterion = float(np.sum(((y - result.best_fit) / err) ** 2)) + 2 * result.nvarys
                 candidates.append((mode, result, rsq, criterion))
-            except Exception:
+            except Exception as exc:
+                failures.append(f"{mode}: {exc}")
                 continue
         if not candidates:
-            raise RuntimeError("all fit modes failed")
+            raise RuntimeError("all fit modes failed: " + "; ".join(failures))
         candidates.sort(key=lambda item: (
             not all(item[1].params[name].stderr is not None and np.isfinite(item[1].params[name].stderr)
                     and item[1].params[name].stderr > 0 for name in ("g_center", "g_sigma", "g_amplitude")),
@@ -1095,6 +1153,7 @@ class ECL2Processor:
             signal_df = signal_df[signal_df["channel"] == channel].copy()
             background_df = background_df[background_df["channel"] == channel].copy()
         self._background_model = (peak_config or {}).get("background_model", "lin")
+        self._active_doublet = (peak_config or {}).get("doublet")
         prepared = self._prepare_spectrum(signal_df, background_df, bin_width)
         mids, spec, bkg_spec, net, net_err = (
             prepared[key] for key in ("mids", "spec", "bkg_spec", "net", "net_err")
@@ -1205,6 +1264,29 @@ class ECL2Processor:
             "signal_input_quality": prepared["signal_input_quality"],
             "background_input_quality": prepared["background_input_quality"],
         }
+        if self._active_doublet is not None:
+            joint = self._active_doublet
+            target_index = next(i for i, energy in enumerate(joint["energies_keV"])
+                                if np.isclose(energy, nominal_energy, rtol=1e-10, atol=1e-8))
+            components = {"g_": nominal_energy, "bk_": joint["energies_keV"][1 - target_index]}
+            ordered_components = sorted(components, key=components.get)
+            names = list(result.var_names)
+            center_indices = [names.index(prefix + "center") for prefix in ordered_components]
+            fit["fit_group"] = f"{energy_key}:CH{channel}:doublet:{lo:g}-{hi:g}"
+            fit["joint_fit"] = {
+                "model": "two_gaussians_plus_linear", "component_energies_keV": components,
+                "parameter_names": names,
+                "parameter_covariance": result.covar.tolist() if result.covar is not None else None,
+                "center_energy_order_keV": [components[prefix] for prefix in ordered_components],
+                "center_covariance_ADC2": (result.covar[np.ix_(center_indices, center_indices)].tolist()
+                                             if result.covar is not None else None),
+                "scale_covar": False,
+                "energy_ratio_constrained": False,
+                "components": {prefix: {name: {"value": float(result.params[prefix + name].value),
+                                               "std": result.params[prefix + name].stderr}
+                                         for name in ("center", "sigma", "amplitude")}
+                               for prefix in components},
+            }
         plot_data = {
             "mids": mids,
             "spec": spec,

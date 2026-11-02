@@ -29,6 +29,7 @@ from .ec_interactive import ECInspector
 from .ec_peaks import catalog as source_peak_catalog
 from .ec_peaks import draft_points, normalize_peak_sets
 from .presets import PresetRegistry
+from .workspace_index import WorkspaceIndex
 
 LAYERS = ("TB_L0", "TB_L1", "TB_L2", "EC_L0", "EC_L1", "EC_L2", "EC_L3")
 CONTRACT_LAYERS = {"TB_L0": "TB_L0", "TB_L1": "TB_L1", "TB_L2": "TB_L2",
@@ -161,6 +162,8 @@ class Workbench:
         self.inventory_cache = {}
         self.peak_catalog_cache = {}
         self._recover()
+        self.workspace_index = WorkspaceIndex(self.workspace)
+        self.workspace_index.refresh()
 
     def _recover(self):
         for path in self.runs.glob("*/state.json"):
@@ -200,6 +203,7 @@ class Workbench:
     def save(self, state):
         with self.lock:
             write(self.root(state["id"]) / "state.json", state)
+            self.workspace_index.update_run(state)
 
     def _saved_operation(self, state, label, paths, layer=None):
         files = [{"name": Path(path).name, "path": str(path).replace("\\", "/"),
@@ -593,6 +597,7 @@ class Workbench:
             for path in set((root / "revisions").glob("*.json")) - revisions:
                 if path.resolve().parent == (root / "revisions").resolve():
                     path.unlink()
+            self.workspace_index.update_run(json.loads(original_state))
             raise
 
     def _bind_run_products(self, state, reference):
@@ -608,7 +613,11 @@ class Workbench:
     def _annotate_datasets(self, catalog):
         for dataset in catalog["datasets"]:
             dataset["acquisition_preset_match"] = self.preset_registry.match(dataset)
-        return catalog
+        return self.workspace_index.annotate_datasets(catalog)
+
+    def personal_index(self):
+        with self.lock:
+            return self.workspace_index.get()
 
     def acquisition_coverage(self, state, layer):
         if not state.get("acquisition"):
@@ -809,6 +818,7 @@ class Workbench:
             state["ec_dependency"] = {**state["selected_tb"], "input_origin": "imported_metadata_verified"}
             state["ec_scope"] = "all"
         write(root / "state.json", state)
+        self.workspace_index.update_run(state)
         if selected_preset:
             reference = {**selected_preset["reference"], "origin": preset_origin, "modified": False}
             state.update(

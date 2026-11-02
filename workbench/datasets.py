@@ -13,6 +13,8 @@ import os
 import re
 from pathlib import Path
 
+from .workspace_index import source_identity
+
 RAW_FOLDERS = ("Temp_Vbias", "X", "X_new", "source", "tb_data", "x_data", "src_data",
                "raw_data", "ec_source", "ec_xray", "ec_xray_new")
 
@@ -53,6 +55,7 @@ class DatasetCatalog:
     def __init__(self, workspace: Path):
         self.workspace = Path(workspace).resolve()
         self.path = self.workspace / "runs" / "datasets.json"
+        self.locations_path = self.workspace / "runs" / "dataset_locations.json"
 
     def saved(self) -> dict | None:
         """Read saved choices without probing removable or network input roots."""
@@ -113,6 +116,9 @@ class DatasetCatalog:
         )
 
     def defaults(self):
+        if self.locations_path.is_file():
+            configured = json.loads(self.locations_path.read_text(encoding="utf-8"))
+            return {key: configured.get(key) for key in ("raw_dir", "product_dir")}
         raw = self.workspace / "14、15B标定数据"
         if not raw.is_dir():
             raw = next(
@@ -128,6 +134,18 @@ class DatasetCatalog:
             "raw_dir": str(raw) if raw.is_dir() else None,
             "product_dir": str(products) if products.is_dir() else None,
         }
+
+    def set_defaults(self, raw_dir, product_dir):
+        """Persist explicit server roots in the personal workspace."""
+        locations = {
+            "raw_dir": str(self._path(raw_dir, required=True)),
+            "product_dir": str(self._path(product_dir, required=True)),
+        }
+        self.locations_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = self.locations_path.with_suffix(".json.tmp")
+        temporary.write_text(json.dumps(locations, ensure_ascii=False, indent=2), encoding="utf-8")
+        temporary.replace(self.locations_path)
+        return locations
 
     def resolve(self, dataset: dict) -> dict:
         """Return a normalized, validated payload definition for a saved run."""
@@ -192,7 +210,8 @@ class DatasetCatalog:
                 raise ValueError("目录选择来源无效")
             record["selection_roles"] = sorted(set(roles))
         identity = json.dumps(record, sort_keys=True, ensure_ascii=False).encode("utf-8")
-        return {"id": hashlib.sha256(identity).hexdigest()[:16], **record}
+        return {"id": hashlib.sha256(identity).hexdigest()[:16], **record,
+                "source_id": source_identity(record)}
 
     def scan(self, raw_dir=None, product_dir=None, payload=None) -> dict:
         defaults = self.defaults()
