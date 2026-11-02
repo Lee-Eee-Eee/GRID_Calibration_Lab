@@ -187,6 +187,12 @@ def make_handler(workbench):
                         return self._file(workbench.root(run_id), "/".join(parts[4:]))
             if self.command == "POST":
                 body = self._body()
+                if path == "/api/contracts/profile":
+                    from ..common.cali_contract import build_acquisition_profile
+                    from .acquisition_store import prepare_profile
+                    profile = build_acquisition_profile(body["payload"], body["raw_dir"],
+                                                        source_payload=body.get("source_payload"))
+                    return self._json(200, {"profile": prepare_profile(workbench.workspace, profile)})
                 if path == "/api/sources/index":
                     return self._json(201, source_catalog.index(body.get("root"), body.get("label")))
                 if path == "/api/reference-spectra/analyze":

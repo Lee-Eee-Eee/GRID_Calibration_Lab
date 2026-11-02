@@ -1,0 +1,312 @@
+payload: 14B
+shared:
+  channels: [0, 1, 2, 3]
+  bin_width: 4.0
+  adc_max: 16384.0
+  ref:
+    temp_C: 25.0
+    bias_V: 28.5
+  conditions:
+    tolerance_V: 0.3
+  corr:
+    mode: role_mean_constant
+    mapping: constant
+    evidence: Channel-specific TB model; each role uses its own four-channel HK bias-plateau mean; no shared SCI/HK axis
+  map:
+    method: constant
+    evidence: Sequential four-channel acquisitions with pauses; role/channel HK plateau mean; no shared SCI-HK event axis
+  clock:
+    normalization: per_channel_event_span
+    frequency_hz: 100000000.0
+    gap_limit_s: 10.0
+    evidence: Per physical channel selected-event timestamp1 first/last span at 100 MHz; monotonic native order; reject a true reversal or any internal event gap >10 s; not live time
+  fit:
+    max_nfev: 10000
+    scale_covar: false
+excluded_measurements: ['70', 30-ch2_start-207.event.dat, 35-ch2_start-207.event.dat, 49-cherror-204.event.dat, 49-ch3_error-204.event.dat, 70-ch1-196.event.dat, 70-ch2-196.event.dat, 70-ch3-196.event.dat]
+source:
+  Na22:
+    energy_keV: 511.004
+    primary_ids: [na22_3m_179.event.dat]
+    background_ids: [bkg_30m_180.event.dat]
+    fit_range: [[2463.3, 3332.7], [2623.1, 3548.9], [2500.7, 3383.3], [2385.1, 3226.9]]
+    background: lin
+    selection:
+      hk_bias: 28.5
+    background_selection:
+      hk_bias: 28.5
+    qa:
+      redchi_warn: 5.0
+      redchi_fail: 50.0
+    accept_residual: 2026-10-18; boundary; provisional; Na22 512 unrecognized bytes + 2 truncated packets; common background 512 unrecognized bytes + 1 truncated packet
+  Cs137:
+    energy_keV: 661.657
+    primary_ids: [cs137_20m_c8_178.event.dat]
+    background_ids: [bkg_30m_180.event.dat]
+    fit_range: [[3028.8, 4543.2], [3220.8, 4831.2], [3070.4, 4605.6], [2881.6, 4322.4]]
+    background: lin
+    selection:
+      hk_bias: 28.5
+    background_selection:
+      hk_bias: 28.5
+    qa:
+      redchi_warn: 5.0
+      redchi_fail: 50.0
+    accept_residual: 2026-10-18; boundary; provisional; Cs137 400 unrecognized bytes + 1 truncated packet; common background 512 unrecognized bytes + 1 truncated packet
+  Co60:
+    energy_keV: 1332.492
+    primary_ids: [co60_1h_177.event.dat]
+    background_ids: [bkg_30m_180.event.dat]
+    fit_range: [[6901.2, 8434.8], [7239.6, 8848.4], [6980.4, 8531.6], [6642.0, 8118.0]]
+    background: gaus
+    selection:
+      hk_bias: 28.5
+    background_selection:
+      hk_bias: 28.5
+    qa:
+      redchi_warn: 5.0
+      redchi_fail: 50.0
+    accept_residual: 2026-10-18; boundary; provisional; Co60 56 unrecognized bytes + 1 truncated packet; common background 512 unrecognized bytes + 1 truncated packet
+    window_guard:
+      anchor_energy_keV: 1332.492
+      forbidden_adc: [[6000.0, 6800.0], [6200.0, 7200.0], [6100.0, 6900.0], [5500.0, 6600.0]]
+xray:
+  '15':
+    energy_keV: 15.0
+    primary_ids: [15-ch0-207.event.dat.cut, 15-ch1-207.event.dat.cut, 15-ch2-207.event.dat.cut, 15-ch3-207.event.dat.cut]
+    background_ids: [15-ch1-207.event.dat.cut, 15-ch2-207.event.dat.cut, 15-ch3-207.event.dat.cut, 15-ch0-207.event.dat.cut]
+    fit_range: [[30.8, 146.3], [36.5, 124.1], [12.2, 183.0], [47.4, 142.2]]
+    background: lin
+    selection:
+      hk_bias: 28.5
+    background_selection:
+      hk_bias: 28.5
+    rotation: [1, 2, 3, 0]
+    qa:
+      redchi_warn: 5.0
+      redchi_fail: 50.0
+  '20':
+    energy_keV: 20.0
+    primary_ids: [20-ch0-207.event.dat.cut, 20-ch1-207.event.dat.cut, 20-ch2-207.event.dat.cut, 20-ch3-207.event.dat.cut]
+    background_ids: [20-ch1-207.event.dat.cut, 20-ch2-207.event.dat.cut, 20-ch3-207.event.dat.cut, 20-ch0-207.event.dat.cut]
+    fit_range: [[47.5, 161.5], [44.5, 151.3], [48.5, 164.9], [47.5, 161.5]]
+    background: lin
+    selection:
+      hk_bias: 28.5
+    background_selection:
+      hk_bias: 28.5
+    rotation: [1, 2, 3, 0]
+    qa:
+      redchi_warn: 5.0
+      redchi_fail: 50.0
+  '25':
+    energy_keV: 25.0
+    primary_ids: [25-ch0-207.event.dat.cut, 25-ch1-207.event.dat.cut, 25-ch2-207.event.dat.cut, 25-ch3-207.event.dat.cut]
+    background_ids: [25-ch1-207.event.dat.cut, 25-ch2-207.event.dat.cut, 25-ch3-207.event.dat.cut, 25-ch0-207.event.dat.cut]
+    fit_range: [[59.5, 202.3], [62.5, 212.5], [61.5, 209.1], [58.5, 198.9]]
+    background: lin
+    selection:
+      hk_bias: 28.5
+    background_selection:
+      hk_bias: 28.5
+    rotation: [1, 2, 3, 0]
+    qa:
+      redchi_warn: 5.0
+      redchi_fail: 50.0
+  '30':
+    energy_keV: 30.0
+    primary_ids: [30-ch0-207.event.dat.cut, 30-ch1-207.event.dat.cut, 30-ch2-207.event.dat.cut, 30-ch3-207.event.dat.cut]
+    background_ids: [30-ch1-207.event.dat.cut, 30-ch2-207.event.dat.cut, 30-ch3-207.event.dat.cut, 30-ch0-207.event.dat.cut]
+    fit_range: [[75.5, 256.7], [81.5, 277.1], [77.5, 263.5], [75.5, 256.7]]
+    background: lin
+    selection:
+      hk_bias: 28.5
+    background_selection:
+      hk_bias: 28.5
+    rotation: [1, 2, 3, 0]
+    qa:
+      redchi_warn: 5.0
+      redchi_fail: 50.0
+  '35':
+    energy_keV: 35.0
+    primary_ids: [35-ch0-207.event.dat.cut, 35-ch1-207.event.dat.cut, 35-ch2-207.event.dat.cut, 35-ch3-207.event.dat.cut]
+    background_ids: [35-ch1-207.event.dat.cut, 35-ch2-207.event.dat.cut, 35-ch3-207.event.dat.cut, 35-ch0-207.event.dat.cut]
+    fit_range: [[90.5, 307.7], [94.5, 321.3], [90.5, 307.7], [86.5, 294.1]]
+    background: lin
+    selection:
+      hk_bias: 28.5
+    background_selection:
+      hk_bias: 28.5
+    rotation: [1, 2, 3, 0]
+    qa:
+      redchi_warn: 5.0
+      redchi_fail: 50.0
+  '40':
+    energy_keV: 40.0
+    primary_ids: [40-ch0-205.event.dat, 40-ch1-204.event.dat.cut, 40-ch2-206.event.dat, 40-ch3-206.event.dat.cut]
+    background_ids: [40-ch1-204.event.dat.cut, 40-ch2-206.event.dat, 40-ch3-206.event.dat.cut, 40-ch0-205.event.dat]
+    fit_range: [[123.0, 287.0], [131.4, 306.6], [132.6, 309.4], [121.8, 284.2]]
+    background: lin
+    selection:
+      hk_bias: 28.5
+    background_selection:
+      hk_bias: 28.5
+    rotation: [1, 2, 3, 0]
+    qa:
+      redchi_warn: 5.0
+      redchi_fail: 50.0
+  '45':
+    energy_keV: 45.0
+    primary_ids: [45-ch0-204.event.dat.cut, 45-ch1-204.event.dat.cut, 45-ch2-204.event.dat.cut, 45-ch3-204.event.dat.cut]
+    background_ids: [45-ch1-204.event.dat.cut, 45-ch2-204.event.dat.cut, 45-ch3-204.event.dat.cut, 45-ch0-204.event.dat.cut]
+    fit_range: [[142.2, 331.8], [150.6, 351.4], [148.2, 345.8], [139.8, 326.2]]
+    background: lin
+    selection:
+      hk_bias: 28.5
+    background_selection:
+      hk_bias: 28.5
+    rotation: [1, 2, 3, 0]
+    qa:
+      redchi_warn: 5.0
+      redchi_fail: 50.0
+  '47':
+    energy_keV: 47.0
+    primary_ids: [47-ch0-204.event.dat.cut, 47-ch1-204.event.dat.cut, 47-ch2-204.event.dat.cut, 47-ch3-204.event.dat.cut]
+    background_ids: [47-ch1-204.event.dat.cut, 47-ch2-204.event.dat.cut, 47-ch3-204.event.dat.cut, 47-ch0-204.event.dat.cut]
+    fit_range: [[153.0, 357.0], [156.6, 365.4], [153.0, 357.0], [147.0, 343.0]]
+    background: lin
+    selection:
+      hk_bias: 28.5
+    background_selection:
+      hk_bias: 28.5
+    rotation: [1, 2, 3, 0]
+    qa:
+      redchi_warn: 5.0
+      redchi_fail: 50.0
+  '49':
+    energy_keV: 49.0
+    primary_ids: [49-ch0-204.event.dat.cut, 49-ch1-204.event.dat.cut, 49-ch2-204.event.dat.cut, 49-ch3-204.event.dat.cut]
+    background_ids: [49-ch1-204.event.dat.cut, 49-ch2-204.event.dat.cut, 49-ch3-204.event.dat.cut, 49-ch0-204.event.dat.cut]
+    fit_range: [[160.2, 373.8], [159.0, 371.0], [159.0, 371.0], [150.6, 351.4]]
+    background: lin
+    selection:
+      hk_bias: 28.5
+    background_selection:
+      hk_bias: 28.5
+    rotation: [1, 2, 3, 0]
+    qa:
+      redchi_warn: 5.0
+      redchi_fail: 50.0
+  '51':
+    energy_keV: 51.0
+    primary_ids: [51-ch0-203.event.dat.cut, 51-ch1-203.event.dat, 51-ch2-203.event.dat.cut, 51-ch3-203.event.dat.cut]
+    background_ids: [51-ch1-203.event.dat, 51-ch2-203.event.dat.cut, 51-ch3-203.event.dat.cut, 51-ch0-203.event.dat.cut]
+    fit_range: [[153.0, 357.0], [165.0, 385.0], [156.6, 365.4], [150.6, 351.4]]
+    background: lin
+    selection:
+      hk_bias: 28.5
+    background_selection:
+      hk_bias: 28.5
+    rotation: [1, 2, 3, 0]
+    qa:
+      redchi_warn: 5.0
+      redchi_fail: 50.0
+  '53':
+    energy_keV: 53.0
+    primary_ids: [53-ch0-201.event.dat.cut, 53-ch1-201.event.dat, 53-ch2-201.event.dat.cut, 53-ch3-201.event.dat.cut]
+    background_ids: [53-ch1-201.event.dat, 53-ch2-201.event.dat.cut, 53-ch3-201.event.dat.cut, 53-ch0-201.event.dat.cut]
+    fit_range: [[168.6, 393.4], [161.4, 376.6], [168.6, 393.4], [154.2, 359.8]]
+    background: lin
+    selection:
+      hk_bias: 28.5
+    background_selection:
+      hk_bias: 28.5
+    rotation: [1, 2, 3, 0]
+    qa:
+      redchi_warn: 5.0
+      redchi_fail: 50.0
+  '55':
+    energy_keV: 55.0
+    primary_ids: [55-ch0-200.event.dat.cut, 55-ch1-200.event.dat, 55-ch2-200.event.dat.cut, 55-ch3-200.event.dat.cut]
+    background_ids: [55-ch1-200.event.dat, 55-ch2-200.event.dat.cut, 55-ch3-200.event.dat.cut, 55-ch0-200.event.dat.cut]
+    fit_range: [[166.2, 387.8], [180.6, 421.4], [172.2, 401.8], [160.2, 373.8]]
+    background: lin
+    selection:
+      hk_bias: 28.5
+    background_selection:
+      hk_bias: 28.5
+    rotation: [1, 2, 3, 0]
+    qa:
+      redchi_warn: 5.0
+      redchi_fail: 50.0
+  '60':
+    energy_keV: 60.0
+    primary_ids: [60-ch0-199.event.dat.cut, 60-ch1-199.event.dat, 60-ch2-199.event.dat.cut, 60-ch3-199.event.dat.cut]
+    background_ids: [60-ch1-199.event.dat, 60-ch2-199.event.dat.cut, 60-ch3-199.event.dat.cut, 60-ch0-199.event.dat.cut]
+    fit_range: [[179.4, 418.6], [192.6, 449.4], [186.6, 435.4], [173.4, 404.6]]
+    background: lin
+    selection:
+      hk_bias: 28.5
+    background_selection:
+      hk_bias: 28.5
+    rotation: [1, 2, 3, 0]
+    qa:
+      redchi_warn: 5.0
+      redchi_fail: 50.0
+  '65':
+    energy_keV: 65.0
+    primary_ids: [65-ch0-197.event.dat.cut, 65-ch1-197.event.dat, 65-ch2-197.event.dat.cut, 65-ch3-198.event.dat]
+    background_ids: [65-ch1-197.event.dat, 65-ch2-197.event.dat.cut, 65-ch3-198.event.dat, 65-ch0-197.event.dat.cut]
+    fit_range: [[199.8, 466.2], [213.0, 497.0], [205.8, 480.2], [190.2, 443.8]]
+    background: lin
+    selection:
+      hk_bias: 28.5
+    background_selection:
+      hk_bias: 28.5
+    rotation: [1, 2, 3, 0]
+    qa:
+      redchi_warn: 5.0
+      redchi_fail: 50.0
+    accept_residual: 2026-10-18; boundary; provisional; 65 keV CH2 cut has 2596 unrecognized bytes
+  '75':
+    energy_keV: 75.0
+    primary_ids: [75-ch0-192.event.dat, 75-ch1-191.event.dat, 75-ch2-194.event.dat, 75-ch3-195.event.dat]
+    background_ids: [75-ch1-191.event.dat, 75-ch2-194.event.dat, 75-ch3-195.event.dat, 75-ch0-192.event.dat]
+    fit_range: [[234.6, 547.4], [246.6, 575.4], [237.0, 553.0], [226.2, 527.8]]
+    background: lin
+    selection:
+      hk_bias: 28.5
+    background_selection:
+      hk_bias: 28.5
+    rotation: [1, 2, 3, 0]
+    qa:
+      redchi_warn: 5.0
+      redchi_fail: 50.0
+  '80':
+    energy_keV: 80.0
+    primary_ids: [80-ch0-188.event.dat, 80-ch1-187.event.dat, 80-ch2-189.event.dat, 80-ch3-190.event.dat]
+    background_ids: [80-ch1-187.event.dat, 80-ch2-189.event.dat, 80-ch3-190.event.dat, 80-ch0-188.event.dat]
+    fit_range: [[247.8, 578.2], [263.4, 614.6], [253.8, 592.2], [245.4, 572.6]]
+    background: lin
+    selection:
+      hk_bias: 28.5
+    background_selection:
+      hk_bias: 28.5
+    rotation: [1, 2, 3, 0]
+    qa:
+      redchi_warn: 5.0
+      redchi_fail: 50.0
+  '90':
+    energy_keV: 90.0
+    primary_ids: [90-ch0-184.event.dat, 90-ch1-183.event.dat, 90-ch2-185.event.dat, 90-ch3-186.event.dat]
+    background_ids: [90-ch1-183.event.dat, 90-ch2-185.event.dat, 90-ch3-186.event.dat, 90-ch0-184.event.dat]
+    fit_range: [[288.6, 673.4], [301.8, 704.2], [292.2, 681.8], [391.2, 586.8]]
+    background: lin
+    selection:
+      hk_bias: 28.5
+    background_selection:
+      hk_bias: 28.5
+    rotation: [1, 2, 3, 0]
+    qa:
+      redchi_warn: 5.0
+      redchi_fail: 50.0

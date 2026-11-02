@@ -29,10 +29,17 @@ class ECL1Processor:
     REF_TEMP = 25.0
     REF_BIAS = 28.5
 
-    def __init__(self, payload_name: str, product_root: Path, *, response_payload: str | None = None):
+    def __init__(self, payload_name: str, product_root: Path, *, response_payload: str | None = None,
+                 analysis_contract: str | None = None, analysis_config: dict | None = None):
         self.payload_name = payload_name
         self.response_payload = response_payload or payload_name
         self.layout = DataLayout(product_root, payload_name)
+        self.analysis_contract = analysis_contract
+        bundle = analysis_config or {}
+        self.analysis_config = bundle.get("ec_l1", bundle)
+        reference = self.analysis_config.get("shared", {}).get("ref", {})
+        self.REF_TEMP = float(reference.get("temp_C", self.REF_TEMP))
+        self.REF_BIAS = float(reference.get("bias_V", self.REF_BIAS))
 
     def process(
         self,
@@ -66,6 +73,15 @@ class ECL1Processor:
             }
             for ch, p in tb_params.items()
         }
+        binding = {
+            "tb_model": str(Path(tb_l2_json_path).resolve()),
+            "tb_model_sha256": hashlib.sha256(Path(tb_l2_json_path).read_bytes()).hexdigest(),
+            "channel_models": tb_params_used,
+            "ref_temp_C": self.REF_TEMP, "ref_bias_V": self.REF_BIAS,
+            "mode": "role_mean_constant" if self.analysis_contract else "legacy_event_conditions",
+            "mapping": "constant" if self.analysis_contract else "legacy",
+            "analysis_contract": self.analysis_contract,
+        }
 
         parquet_dir = self.layout.get_ec_l0_dir() / "parquet"
         if not parquet_dir.exists():
@@ -80,11 +96,14 @@ class ECL1Processor:
             source_spec_map.setdefault(spec.name, []).append(spec)
 
         bkg_stem: str | None = None
+        def is_background(path):
+            return bool(bkg_re.fullmatch(path.name)) or bool(self.analysis_contract and path.name.startswith("src_bkg_"))
         needs_background = selected is None or any(stem.startswith("src_") for stem in selected)
         if needs_background:
-            candidates = [pf for pf in sorted(parquet_dir.glob("src_bkg_*.l0.parquet")) if bkg_re.fullmatch(pf.name)]
+            candidates = [pf for pf in sorted(parquet_dir.glob("src_bkg_*.l0.parquet")) if is_background(pf)]
             explicit = [pf for pf in candidates if selected is not None and pf.name.removesuffix(".l0.parquet") in selected]
-            configured = [pf for pf in candidates if f"{float(bkg_re.fullmatch(pf.name).group('min')):g}" == f"{float(config.bkg_exposure_minutes):g}"]
+            configured = ([] if self.analysis_contract else [pf for pf in candidates
+                          if f"{float(bkg_re.fullmatch(pf.name).group('min')):g}" == f"{float(config.bkg_exposure_minutes):g}"])
             choices = explicit or configured or candidates
             if len(choices) > 1:
                 raise ValueError("Multiple EC backgrounds found; select one background exposure before correction")
@@ -95,18 +114,21 @@ class ECL1Processor:
         if bkg_stem:
             bkg_path = parquet_dir / f"{bkg_stem}.l0.parquet"
             try:
-                df_bkg, input_quality = validated_events(read_parquet(bkg_path))
+                df_bkg, input_quality = validated_events(self._read_input(bkg_path))
+                df_bkg = self._with_conditions(df_bkg, bkg_path)
                 bkg_df_corrected = self._apply_correction(df_bkg, tb_params)
                 acquisition = self._l0_acquisition(bkg_path)
-                duration = float(bkg_re.fullmatch(bkg_path.name).group("min"))
-                if f"{duration:g}" == f"{float(config.bkg_exposure_minutes):g}":
+                duration = None if self.analysis_contract else float(bkg_re.fullmatch(bkg_path.name).group("min"))
+                if duration is not None and f"{duration:g}" == f"{float(config.bkg_exposure_minutes):g}":
                     duration = config.bkg_exposure_minutes
                 duration = acquisition.get("observation", {}).get("exposure_minutes", duration)
                 bkg_out_path = self.layout.get_ec_l1_parquet(f"{bkg_stem}_corr.l1.parquet")
                 write_parquet(bkg_out_path, bkg_df_corrected,
                               metadata={"tb_corrfile": str(tb_l2_json_path.name),
+                                        **binding,
                                         "tb_params_used": tb_params_used,
                                         "exposure_minutes": duration,
+                                        "conditions": df_bkg.attrs.get("native_conditions"),
                                         "acquisition": acquisition},
                               meta_key="tb_correction", schema_metadata={"acquisition": acquisition,
                                                                           "input_quality": input_quality})
@@ -121,18 +143,22 @@ class ECL1Processor:
                 print(f"Error: bkg {bkg_stem} - {exc}")
 
         for parquet_file in sorted(parquet_dir.glob("*.l0.parquet")):
-            if bkg_re.fullmatch(parquet_file.name):
+            if is_background(parquet_file):
                 continue
             stem = parquet_file.stem.replace(".l0", "")
             if selected is not None and stem not in selected:
                 continue
 
             src_match = src_re.match(parquet_file.name)
-            if src_match:
-                source_name = src_match.group("name")
+            observation = read_parquet_metadata(parquet_file, "acquisition").get("observation", {})
+            native_source = observation.get("source_name", observation.get("source")) if self.analysis_contract else None
+            if src_match or native_source:
+                source_name = native_source or src_match.group("name")
                 source_candidates = source_spec_map.get(source_name, [])
-                spec = next((candidate for candidate in source_candidates
-                             if f"{float(candidate.exposure_minutes):g}" == f"{float(src_match.group('min')):g}"), None)
+                spec = (source_candidates[0] if self.analysis_contract and len(source_candidates) == 1 else
+                        next((candidate for candidate in source_candidates
+                             if src_match and candidate.exposure_minutes is not None
+                             and f"{float(candidate.exposure_minutes):g}" == f"{float(src_match.group('min')):g}"), None))
                 if spec is None and len(source_candidates) == 1:
                     spec = source_candidates[0]
                 if spec is None:
@@ -148,21 +174,24 @@ class ECL1Processor:
                 spec = None
 
             try:
-                df_l0, input_quality = validated_events(read_parquet(parquet_file))
+                df_l0, input_quality = validated_events(self._read_input(parquet_file))
+                df_l0 = self._with_conditions(df_l0, parquet_file)
                 df_l1 = self._apply_correction(df_l0, tb_params)
                 acquisition = self._l0_acquisition(parquet_file)
 
                 file_metadata = {
+                    **binding,
                     "tb_corrfile": str(tb_l2_json_path.name),
                     "tb_params_used": tb_params_used,
                     "acquisition": acquisition,
                     "input_quality": input_quality,
+                    "conditions": df_l0.attrs.get("native_conditions"),
                 }
                 if spec is not None:
                     file_metadata["source_name"] = spec.name
                     file_metadata["peak_energies_keV"] = list(spec.peak_energies_keV)
-                    duration = float(src_match.group("min"))
-                    if f"{duration:g}" == f"{float(spec.exposure_minutes):g}":
+                    duration = None if self.analysis_contract else float(src_match.group("min"))
+                    if duration is not None and f"{duration:g}" == f"{float(spec.exposure_minutes):g}":
                         duration = spec.exposure_minutes
                     file_metadata["exposure_minutes"] = acquisition.get("observation", {}).get("exposure_minutes", duration)
                 elif acquisition.get("observation", {}).get("energy_keV") is not None:
@@ -188,6 +217,39 @@ class ECL1Processor:
 
         write_json(self.layout.get_ec_l1_json("L1_manifest.json"), results)
         return results
+
+    def _read_input(self, path):
+        if self.analysis_contract:
+            from ...common.native_time import read_analysis_events
+            return read_analysis_events(path)
+        return read_parquet(path)
+
+    def _with_conditions(self, frame, path):
+        if not self.analysis_contract:
+            return frame
+        from ...common.native_time import apply_conditions
+        native = read_parquet_metadata(path, "native")
+        if not native:
+            native = read_parquet_metadata(path, "acquisition").get("native", {})
+        acquisition = read_parquet_metadata(path, "acquisition")
+        observation = acquisition.get("observation", {})
+        source = observation.get("source_name", observation.get("source"))
+        kind = "source" if source else "xray"
+        key = source if kind == "source" else f"{float(observation.get('energy_keV') or 0):g}"
+        entry = self.analysis_config.get(kind, {}).get(key, {})
+        target = float(entry.get("selection", {}).get("hk_bias", observation.get("bias") or self.REF_BIAS))
+        if path.name.startswith("src_bkg_"):
+            targets = {float(value["background_selection"]["hk_bias"])
+                       for family in ("source", "xray") for value in self.analysis_config.get(family, {}).values()
+                       if value.get("background_selection", {}).get("hk_bias") is not None}
+            if len(targets) > 1:
+                raise ValueError("Shared background has conflicting HK selections; configure a distinct background analysis")
+            target = next(iter(targets), observation.get("bias") or self.REF_BIAS)
+        shared = self.analysis_config.get("shared", {})
+        tolerance = float(shared.get("conditions", shared.get("selection", {})).get("tolerance_V", .3))
+        frame, conditions = apply_conditions(frame, native, target_bias=target, tolerance=tolerance)
+        frame.attrs["native_conditions"] = conditions
+        return frame
 
     @staticmethod
     def _l0_acquisition(path: Path) -> dict[str, Any]:
@@ -262,6 +324,8 @@ class ECL1Processor:
                 continue
             params = tb_params[ch]
             current_gain = self._gain_temp_bias_model(temp_arr[mask], bias_arr[mask], params)
+            if self.analysis_contract and (not np.isfinite(current_gain).all() or np.any(current_gain <= 0)):
+                raise ValueError(f"CH{ch}: TB response is non-finite or non-positive at measured conditions")
             current_gain = np.maximum(current_gain, 1e-12)
             ref_gain = self._gain_temp_bias_model(
                 np.full(np.count_nonzero(mask), self.REF_TEMP, dtype=float),
@@ -273,6 +337,8 @@ class ECL1Processor:
 
         out["amp_corr"] = amp_corr
 
-        valid = np.isfinite(out["amp_corr"]) & (out["amp_corr"] > 0)
+        valid = np.isfinite(out["amp_corr"])
+        if not self.analysis_contract:
+            valid &= out["amp_corr"] > 0
         out = out[valid].reset_index(drop=True)
         return out

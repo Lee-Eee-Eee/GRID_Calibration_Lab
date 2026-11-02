@@ -8,6 +8,7 @@ import matplotlib.tri as mtri
 import numpy as np
 from scipy.optimize import curve_fit
 
+from ...common.cali_contract import CONTRACT, publish_l2
 from ...common.fit_policy import finite_number, quality_warnings, usable_peak
 from ...common.spectral_models import unsupported_spectral_model
 from ...common.utils import DataLayout, get_timestamp, read_json, read_parquet_metadata, write_json
@@ -49,17 +50,25 @@ class TBL2Processor:
     # Historical R² threshold now adds a warning without dropping the point.
     MIN_RSQUARED = 0.5
 
-    def __init__(self, payload_name: str, product_root: Path, *, response_payload: str | None = None):
+    def __init__(self, payload_name: str, product_root: Path, *, response_payload: str | None = None,
+                 analysis_contract: str | None = None, config: dict | None = None):
         self.payload_name = payload_name
         self.response_payload = response_payload or payload_name
         self.layout = DataLayout(product_root, payload_name)
+        self.analysis_contract = analysis_contract
+        self.config = config or {}
 
     def process(
         self,
         tb_l1_dir: Path,
         tb_l0_dir: Optional[Path] = None,
         excluded_points: Optional[Iterable[str]] = None,
+        *, analysis_contract: str | None = None, analysis_config: dict | None = None,
     ) -> Dict[str, Any]:
+        if analysis_contract is not None:
+            self.analysis_contract = analysis_contract
+        if analysis_config is not None:
+            self.config = analysis_config
         l0_dir = tb_l0_dir if tb_l0_dir is not None else self.layout.get_tb_l0_dir()
 
         results: Dict[str, Any] = {
@@ -78,10 +87,13 @@ class TBL2Processor:
 
         try:
             fit_data = self._collect_fit_data(tb_l1_dir, l0_dir)
+            if any(row.get("analysis_contract") == CONTRACT for row in fit_data):
+                self.analysis_contract = CONTRACT
             excluded = set(excluded_points or [])
             results["excluded_points"] = sorted(excluded)
             fit_data = [row for row in fit_data
-                        if f"{self.payload_name}:{row['file']}:{row['channel']}" not in excluded]
+                        if f"{self.payload_name}:{row['file']}:{row['channel']}" not in excluded
+                        and row["file"] not in set(self.config.get("exclude", []))]
             results["suspect_points"] = [
                 {"id": f"{self.payload_name}:{row['file']}:{row['channel']}", "warnings": row["quality_warnings"]}
                 for row in fit_data if row.get("quality_warnings")
@@ -147,6 +159,19 @@ class TBL2Processor:
             write_json(out_json, wiki_records)
             results["output_json"] = out_json.name
             results["output_figures"] = files_list
+            if self.analysis_contract == CONTRACT:
+                models = [None if row is None else {
+                    **row, "ndf": row["n_points"] - 5, "redchi": row["chi2_reduced"],
+                    "points": row["n_points"],
+                } for row in params_list]
+                results["canonical"] = publish_l2(
+                    self.layout.product_root, self.payload_name, "tb", models,
+                    {"config": self.config, "inputs": fit_data, "excluded": sorted(excluded),
+                     "fit": {"method": "lmfit", "weights": "1/center_std", "scale_covar": False},
+                     "internal_layer": "TB_L2"},
+                    figures={name.replace(".l2.png", ".png"): self.layout.get_tb_l2_dir() / "figures" / name
+                             for name in files_list},
+                )
 
             print(f"TB L2: fitted {len(fit_data)} total points across {sum(p is not None for p in params_list)} channels")
         except Exception as exc:
@@ -230,6 +255,7 @@ class TBL2Processor:
                     "channel": ch,
                     "file": str(stem),
                     "quality_warnings": quality_warnings(rec, min_rsquared=self.MIN_RSQUARED),
+                    "analysis_contract": rec.get("analysis_contract"),
                 })
         return rows
 
@@ -242,6 +268,8 @@ class TBL2Processor:
 
         # center_err 缺失时回退到 sqrt(gain)（poisson-ish proxy），保证全部有正值
         sigma = np.where(gains_err > 0, gains_err, np.sqrt(np.maximum(gains, 1.0)))
+        if self.analysis_contract == CONTRACT:
+            return self._fit_native_surface(fit_data, temps, biases, gains, gains_err)
 
         x_data = np.column_stack([temps, biases])
 
@@ -310,6 +338,40 @@ class TBL2Processor:
             "chi2_reduced": chi2_red,
             "n_points": int(len(fit_data)),
         }
+
+    def _fit_native_surface(self, fit_data, temps, biases, gains, errors):
+        from lmfit import Model
+
+        if np.any(~np.isfinite(errors)) or np.any(errors <= 0):
+            raise ValueError("TB L2 needs finite positive center_std for the configured absolute weights")
+        channel = fit_data[0]["channel"]
+        model_cfg = self.config.get("model", {})
+        initial = model_cfg.get("p0_by_channel", {}).get(str(channel),
+                    model_cfg.get("p0", [self.G0_INIT, self.K_INIT, self.V0_INIT, self.B_INIT, self.C_INIT]))
+
+        def response(temp, bias, G0, k, V0, b, c):
+            return G0 * (bias - k * temp - V0)**2 * (-temp**2 + b * temp + c)
+
+        model = Model(response, independent_vars=("temp", "bias"))
+        for name, value in zip(("G0", "k", "V0", "b", "c"), initial, strict=True):
+            limits = model_cfg.get("bounds", {}).get(name)
+            model.set_param_hint(name, value=float(value),
+                                 **({"min": float(limits[0]), "max": float(limits[1])} if limits else {}))
+        result = model.fit(gains, temp=temps, bias=biases, weights=1 / errors,
+                           method=model_cfg.get("method", "leastsq"),
+                           max_nfev=int(model_cfg.get("max_nfev", 100000)), scale_covar=False)
+        if not result.success or result.covar is None or not np.isfinite(result.covar).all():
+            raise ValueError(f"TB response fit has no finite covariance: {result.message}")
+        params = {}
+        for name in ("G0", "k", "V0", "b", "c"):
+            if result.params[name].stderr is None:
+                raise ValueError(f"TB response uncertainty missing for {name}")
+            params[name], params[f"{name}_err"] = float(result.params[name].value), float(result.params[name].stderr)
+        residual = gains - result.best_fit
+        params.update(chi2=float(result.chisqr), chi2_reduced=float(result.redchi),
+                      rmse=float(np.sqrt(np.mean(residual**2))),
+                      mape_percent=float(np.mean(np.abs(residual / gains)) * 100), n_points=len(fit_data))
+        return params
 
     def _plot_channel_fit(
         self,

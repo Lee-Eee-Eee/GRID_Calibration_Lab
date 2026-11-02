@@ -1350,6 +1350,24 @@ test('opening a source workflow selects its real filename instead of the first l
   assert.equal(ui.element('pipeline-ec-file').value,'src_Co60_40m');
 });
 
+test('native imported source alias resolves to its unique current corrected observation', async () => {
+  const ui=controller();
+  ui.run(`state.run.analysis_contract='cali_proc@0.5';state.layer='EC_L2';state.channel=0;
+    state.ecPeakConfig={spectra:[{energy_key:'src_Na22',source_files:[{name:'src_Na22_Na22_5m_083_corr.l1.parquet'}]}]};
+    const imported={id:'15B:ec:src_Na22:0:511.004',stem:'src_Na22',energy_key:'src_Na22',channel:0,
+      signal_file:'Na22_corr.l1.parquet',contract_node:'/shared/15B/ec/L1/Na22'};
+    state.point=imported;state.ecOverview={points:[imported]};let submitted=[];
+    selectLayer=async layer=>{state.layer=layer;};selectEcPoint=async point=>{state.point=point;};
+    executeJob=async(layer,spec)=>{submitted.push({layer,...spec});};`);
+  await ui.run(`runPipeline([{layer:'EC_L2',stem:'src_Na22_Na22_5m_083',representative:false}],'ec')`);
+  const submitted=JSON.parse(ui.run('JSON.stringify(submitted)'));
+  assert.equal(submitted.length,1);
+  assert.equal(submitted[0].stem,'src_Na22_Na22_5m_083');
+  assert.equal(submitted[0].point_id,'15B:ec:src_Na22:0:511.004');
+  ui.run(`state.ecPeakConfig.spectra[0].source_files.push({name:'src_Na22_other_corr.l1.parquet'});`);
+  assert.equal(ui.run('ecObservationStem(state.point)'),'Na22');
+});
+
 test('CRC recovery rebuilds the selected source and background without fitting historical windows', async () => {
   const ui=controller();
   ui.run(`state.layer='EC_L2';state.channel=1;
@@ -1511,4 +1529,26 @@ test('EC focused rendering preserves signed data while full-source view restores
   assert.equal(full.layout.yaxis.autorange,true);
   assert.equal(full.layout.yaxis.range,undefined);
   assert.deepEqual(full.traces[0].y,focused.traces[0].y);
+});
+
+
+test('native contract relabels EC steps while preserving legacy run identities', () => {
+  const ui=controller();
+  assert.equal(ui.run('layerDisplay("EC_L2")'),'EC_L2');
+  ui.run('state.run.analysis_contract="cali_proc@0.5";state.layer="EC_L3"');
+  assert.equal(ui.run('layerDisplay("EC_L1")'),'EC corr');
+  assert.equal(ui.run('layerDisplay("EC_L2")'),'EC L1');
+  assert.equal(ui.run('layerDisplay("EC_L3")'),'EC L2');
+  assert.match(ui.run('activeLayer().process'),/ODR/);
+});
+
+test('native xray workflow schedules the next acquisition slot as the same-channel background', () => {
+  const ui=controller();
+  ui.run(`state.run.analysis_contract='cali_proc@0.5';state.run.inventory={raw:{reading_preview:{rows:[
+    {kind:'xray',stem:'40keV_ch0',channel:0,energy_keV:40},
+    {kind:'xray',stem:'40keV_ch1',channel:1,energy_keV:40},
+    {kind:'xray',stem:'40keV_ch2',channel:2,energy_keV:40}]}}};`);
+  const plan=JSON.parse(ui.run('JSON.stringify(pipelinePlan("ec","","40keV_ch0"))'));
+  assert.deepEqual(plan.slice(0,2).map(x=>[x.layer,x.stem]),[['EC_L0','40keV_ch1'],['EC_L1','40keV_ch1']]);
+  assert.equal(plan.at(-1).stem,'40keV_ch0');
 });

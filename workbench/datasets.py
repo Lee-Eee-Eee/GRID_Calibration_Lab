@@ -13,7 +13,8 @@ import os
 import re
 from pathlib import Path
 
-RAW_FOLDERS = ("Temp_Vbias", "X", "X_new", "source", "tb_data", "x_data", "src_data")
+RAW_FOLDERS = ("Temp_Vbias", "X", "X_new", "source", "tb_data", "x_data", "src_data",
+               "raw_data", "ec_source", "ec_xray", "ec_xray_new")
 
 
 def validate_payload(value: str) -> str:

@@ -381,7 +381,6 @@ dialog input, dialog select { width: 100%; font-size: 14px; }
   .stage-title-row { flex-direction: row; align-items: center; }
   .stage-actions label { display: none; }
   .stage-actions { width: auto; }
-  .stage-actions #run-pipeline { display: none; }
   .analysis-grid { grid-template-columns: minmax(0, 1fr) 330px; }
   .point-actions { grid-template-columns: 1fr auto; }
 }

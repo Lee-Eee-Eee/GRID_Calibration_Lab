@@ -68,6 +68,27 @@ def read_xml(workspace, *, path=None, preset=None):
 
 
 def prepare_profile(workspace, profile=None, payload_profile=None):
+    if isinstance(profile, dict) and "analysis_config_text" in profile:
+        import yaml
+        profile = copy.deepcopy(profile)
+        texts = profile.pop("analysis_config_text")
+        if not isinstance(texts, dict) or set(texts) != {"tb_l1", "tb_l2", "ec_l1", "ec_l2"}:
+            raise ValueError("需要四份分析配置文本")
+        profile["analysis_config"] = {}
+        for name, text in texts.items():
+            try:
+                value = yaml.safe_load(text)
+            except yaml.YAMLError as exc:
+                raise ValueError(f"{name}.yaml 语法无效: {exc}") from exc
+            if not isinstance(value, dict):
+                raise ValueError(f"{name}.yaml 需要配置对象")
+            profile["analysis_config"][name] = value
+    if isinstance(profile, dict) and profile.get("analysis_contract") == "cali_proc@0.5":
+        profile = copy.deepcopy(profile)
+        shared = profile.get("analysis_config", {}).get("tb_l1", {}).get("shared", {})
+        histogram = profile.setdefault("fitting", {}).setdefault("tb_histogram", {})
+        histogram.update(min=0., max=float(shared.get("adc_max", histogram.get("max", 16384.))),
+                         bin_width=float(shared.get("bin_width", histogram.get("bin_width", 4.))))
     prepared = validate_profile(profile if profile is not None else default_profile(payload_profile))
     for role in ("event", "hk"):
         section = prepared["xml"][role]
@@ -214,12 +235,23 @@ def freeze_profile(run_root, profile, revision):
     data = json.dumps(effective, ensure_ascii=False, indent=2, allow_nan=False).encode("utf-8")
     path = directory / "profile.json"
     path.write_bytes(data)
+    analysis_files = []
+    if effective.get("analysis_contract") == "cali_proc@0.5":
+        import yaml
+        for name, config in effective.get("analysis_config", {}).items():
+            if name not in ("tb_l1", "tb_l2", "ec_l1", "ec_l2"):
+                raise ValueError("未知分析配置文件")
+            target = directory / (name + ".yaml")
+            encoded = yaml.safe_dump(config, allow_unicode=True, sort_keys=False).encode("utf-8")
+            target.write_bytes(encoded)
+            analysis_files.append({"name": target.name, "path": str(target), "sha256": hashlib.sha256(encoded).hexdigest()})
     return {
         "revision": revision,
         "sha256": sha,
         "path": str(path),
         "file_sha256": hashlib.sha256(data).hexdigest(),
         "xml": files,
+        **({"analysis_files": analysis_files} if analysis_files else {}),
     }
 
 
@@ -260,6 +292,10 @@ def load_profile(reference):
                 raise ValueError(f"{role} XML 快照 SHA-256 已变化，请重新保存配置")
             if xml_data != profile["xml"][role]["text"].encode("utf-8"):
                 raise ValueError(f"{role} XML 快照内容与配置记录不一致")
+        for item in reference.get("analysis_files", []):
+            yaml_path = Path(item["path"])
+            if yaml_path.parent.resolve() != path.parent or hashlib.sha256(yaml_path.read_bytes()).hexdigest() != item["sha256"]:
+                raise ValueError("分析配置快照与保存版本不一致")
         profile.update(_sha256=reference["sha256"], _revision=reference["revision"])
         return profile
     except (KeyError, TypeError, OSError, UnicodeError, json.JSONDecodeError) as exc:

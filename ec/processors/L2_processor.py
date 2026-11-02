@@ -9,7 +9,8 @@ from typing import Any
 
 import matplotlib.pyplot as plt
 import numpy as np
-from lmfit.models import ExponentialModel, GaussianModel, LinearModel
+import pandas as pd
+from lmfit.models import ExponentialModel, GaussianModel, LinearModel, QuadraticModel
 from scipy.signal import savgol_filter
 
 from ...common.peak_finding import detect_photopeak, detect_photopeak_for_fit, fit_quality
@@ -32,10 +33,16 @@ DISPLAY_BIN_MERGE = 3
 class ECL2Processor:
     """EC L2层处理器 - 兼容旧 X-ray 流程的背景扣除、拟合与绘图。"""
 
-    def __init__(self, payload_name: str, product_root: Path, *, response_payload: str | None = None):
+    def __init__(self, payload_name: str, product_root: Path, *, response_payload: str | None = None,
+                 analysis_contract: str | None = None, analysis_config: dict | None = None):
         self.payload_name = payload_name
         self.response_payload = response_payload or payload_name
         self.layout = DataLayout(product_root, payload_name)
+        self.analysis_contract = analysis_contract
+        bundle = analysis_config or {}
+        self.analysis_config = bundle.get("ec_l1", bundle)
+        self._background_model = "auto"
+        self._active_analysis = {}
 
     @staticmethod
     def input_evidence(path: Path) -> dict[str, Any]:
@@ -72,7 +79,11 @@ class ECL2Processor:
 
     def process(self, ec_l1_dir: Path, config: dict[str, Any] | None = None) -> dict[str, Any]:
         cfg = config or {}
-        bin_width = float(cfg.get("bin_width", BIN_WIDTH))
+        self.analysis_contract = cfg.get("analysis_contract", self.analysis_contract)
+        contract_config = cfg.get("payload_contract_config", self.analysis_config)
+        self.analysis_config = contract_config.get("ec_l1", contract_config)
+        default_width = self.analysis_config.get("shared", {}).get("bin_width", BIN_WIDTH) if self.analysis_contract else BIN_WIDTH
+        bin_width = float(cfg.get("bin_width", default_width))
         if not np.isfinite(bin_width) or bin_width <= 0:
             raise ValueError("bin_width must be finite and positive")
         only_point = self._only_point(cfg.get("only_point"))
@@ -114,6 +125,8 @@ class ECL2Processor:
 
         src_re = re.compile(r"^src_(?P<name>.+)_(?P<min>\d+(?:\.\d+)?)m_corr\.l1\.parquet$")
         bkg_re = re.compile(r"^src_bkg_(?P<min>\d+(?:\.\d+)?)m_corr\.l1\.parquet$")
+        def is_background(path):
+            return bool(bkg_re.fullmatch(path.name)) or bool(self.analysis_contract and path.name.startswith("src_bkg_"))
 
         bkg_df_global: Any | None = None
         bkg_file_global: str | None = None
@@ -121,46 +134,52 @@ class ECL2Processor:
         selected_energies = [only_point[0]] if only_point else cfg.get("only_energies")
         needs_background = selected_energies is None or any(str(value).startswith("src_") for value in selected_energies)
         if needs_background:
-            candidates = [pf for pf in sorted(parquet_dir.glob("src_bkg_*_corr.l1.parquet")) if bkg_re.fullmatch(pf.name)]
+            candidates = [pf for pf in sorted(parquet_dir.glob("src_bkg_*_corr.l1.parquet")) if is_background(pf)]
             selected_background = cfg.get("background_stem")
             if selected_background is not None:
-                if not re.fullmatch(r"src_bkg_\d+(?:\.\d+)?m", str(selected_background)):
+                if not re.fullmatch(r"src_bkg_[A-Za-z0-9_.-]+" if self.analysis_contract else r"src_bkg_\d+(?:\.\d+)?m", str(selected_background)):
                     raise ValueError("Invalid EC background_stem; use src_bkg_<minutes>m")
                 candidates = [pf for pf in candidates if pf.name == f"{selected_background}_corr.l1.parquet"]
             if len(candidates) > 1:
                 raise ValueError("Multiple EC backgrounds found; choose background_stem before peak fitting")
             if candidates:
                 pf = candidates[0]
-                bkg_df_global, input_quality = validated_events(read_parquet(pf))
+                bkg_df_global, input_quality = validated_events(self._read_input(pf))
                 bkg_df_global.attrs["crc_input_quality"] = input_quality
                 bkg_file_global = pf.name
                 bkg_exposure = read_parquet_metadata(pf, "tb_correction").get(
-                    "exposure_minutes", float(bkg_re.fullmatch(pf.name).group("min")),
+                    "exposure_minutes", None if self.analysis_contract else float(bkg_re.fullmatch(pf.name).group("min")),
                 )
 
         grouped_by_energy: dict[str, dict[int, dict[str, Any]]] = {}
         input_evidence: dict[str, dict[str, Any]] = {}
         selected_stems = set(cfg["only_stems"]) if cfg.get("only_stems") is not None else None
+        requested_keys = {stem.rsplit("_ch", 1)[0] for stem in selected_stems or [] if not stem.startswith("src_")}
+        if self.analysis_contract and selected_energies is None and requested_keys:
+            selected_energies = sorted(requested_keys)
         for parquet_file in sorted(parquet_dir.glob("*_corr.l1.parquet")):
-            if bkg_re.fullmatch(parquet_file.name):
+            if is_background(parquet_file):
                 continue
+            native_meta = read_parquet_metadata(parquet_file, "tb_correction") if self.analysis_contract else {}
+            native_source = native_meta.get("source_name")
             if only_point:
                 src_match = src_re.fullmatch(parquet_file.name)
-                candidate_key = (f"src_{src_match.group('name')}" if src_match else
+                candidate_key = (f"src_{native_source or src_match.group('name')}" if native_source or src_match else
                                  parquet_file.name.removesuffix("_corr.l1.parquet").rsplit("_ch", 1)[0])
                 if candidate_key != only_point[0]:
                     continue
-            if selected_stems is not None and parquet_file.name.removesuffix("_corr.l1.parquet") not in selected_stems:
+            if (selected_stems is not None and parquet_file.name.removesuffix("_corr.l1.parquet") not in selected_stems
+                    and not (self.analysis_contract and not parquet_file.name.startswith("src_"))):
                 continue
             try:
-                df, input_quality = validated_events(read_parquet(parquet_file))
+                df, input_quality = validated_events(self._read_input(parquet_file))
                 df.attrs["crc_input_quality"] = input_quality
                 meta = read_parquet_metadata(parquet_file, meta_key="tb_correction") or {}
 
                 src_match = src_re.match(parquet_file.name)
-                if src_match:
-                    source_name = src_match.group("name")
-                    exposure_minutes = meta.get("exposure_minutes", float(src_match.group("min")))
+                if src_match or native_source:
+                    source_name = native_source or src_match.group("name")
+                    exposure_minutes = meta.get("exposure_minutes", None if self.analysis_contract else float(src_match.group("min")))
                     peak_energies = meta.get("peak_energies_keV") or []
                     energy_key = f"src_{source_name}"
 
@@ -177,6 +196,9 @@ class ECL2Processor:
                         temp_err = float(df_ch["temp"].std()) if "temp" in df_ch.columns else 0.0
                         bias_val = float(df_ch["bias"].mean()) if "bias" in df_ch.columns else float("nan")
                         bias_err = float(df_ch["bias"].std()) if "bias" in df_ch.columns else 0.0
+                        condition = (meta.get("conditions") or {}).get("channels", {}).get(str(ch), {})
+                        temp_val, temp_err = condition.get("temp", temp_val), condition.get("temp_err", temp_err)
+                        bias_val, bias_err = condition.get("bias", bias_val), condition.get("bias_err", bias_err)
 
                         grouped_by_energy.setdefault(energy_key, {})[int(ch)] = {
                             "stem": f"{source_name}_ch{ch}",
@@ -197,16 +219,22 @@ class ECL2Processor:
                     if len(parts) == 2:
                         energy_key = parts[0]
                         ch = int(parts[1])
-                        if len(df) >= 10:
-                            temp_val = float(df["temp"].mean()) if "temp" in df.columns else float("nan")
-                            temp_err = float(df["temp"].std()) if "temp" in df.columns else 0.0
-                            bias_val = float(df["bias"].mean()) if "bias" in df.columns else float("nan")
-                            bias_err = float(df["bias"].std()) if "bias" in df.columns else 0.0
+                        physical = df[df["channel"] == ch].copy() if self.analysis_contract else df
+                        if len(physical) >= 10:
+                            temp_val = float(physical["temp"].mean()) if "temp" in physical.columns else float("nan")
+                            temp_err = float(physical["temp"].std()) if "temp" in physical.columns else 0.0
+                            bias_val = float(physical["bias"].mean()) if "bias" in physical.columns else float("nan")
+                            bias_err = float(physical["bias"].std()) if "bias" in physical.columns else 0.0
+                            condition = (meta.get("conditions") or {}).get("channels", {}).get(str(ch), {})
+                            temp_val, temp_err = condition.get("temp", temp_val), condition.get("temp_err", temp_err)
+                            bias_val, bias_err = condition.get("bias", bias_val), condition.get("bias_err", bias_err)
 
                             grouped_by_energy.setdefault(energy_key, {})[ch] = {
                                 "stem": stem,
-                                "df": df,
+                                "df": physical,
+                                "full_df": df,
                                 "parquet": parquet_file.name,
+                                "acquisition_id": meta.get("acquisition", {}).get("observation", {}).get("acquisition_id"),
                                 "data_type": "x",
                                 "source_name": None,
                                 "peak_energies_keV": [float(meta.get("energy_keV", self._energy_sort_key(energy_key)))],
@@ -220,7 +248,7 @@ class ECL2Processor:
                 print(f"✗ Error: {parquet_file.name} - {exc}")
 
         for energy_key, ch_map in sorted(grouped_by_energy.items(), key=lambda item: self._energy_sort_key(item[0])):
-            selected_energies = [only_point[0]] if only_point else cfg.get("only_energies")
+            selected_energies = ([only_point[0]] if only_point else cfg.get("only_energies")) or selected_energies
             if selected_energies is not None and energy_key not in selected_energies:
                 continue
             required_channels = set(selected_channels)
@@ -256,6 +284,9 @@ class ECL2Processor:
                     if not peak_energies or not all(np.isfinite(float(value)) and float(value) > 0 for value in peak_energies):
                         raise ValueError(f"Configure finite positive peak energies for source {source_name}")
                 manual_windows = (src_windows.get(source_name, {}) if data_type == "src" and source_name else {})
+                configured_analysis = self.analysis_config.get("source" if data_type == "src" else "xray", {}).get(
+                    source_name if data_type == "src" else energy_key.removesuffix("keV"), {})
+                self._active_analysis = configured_analysis
                 if only_point and not any(np.isclose(float(energy), only_point[2], rtol=1e-10, atol=1e-8)
                                           for energy in peak_energies):
                     raise ValueError(f"only_point energy {only_point[2]:g} keV is not configured for {energy_key}")
@@ -298,6 +329,11 @@ class ECL2Processor:
                                 peak_window = [xw["lo"], xw["hi"]]
                                 window_source = "packaged"
                         point_id = f"{self.payload_name}:ec:{energy_key}:{ch}:{float(peak_E):g}"
+                        if self.analysis_contract and configured_analysis.get("fit_range"):
+                            anchor = float(configured_analysis.get("energy_keV", peak_E))
+                            if data_type == "x" or abs(anchor - peak_E) < 1.0:
+                                peak_window = configured_analysis["fit_range"][ch]
+                                window_source = "payload_config"
                         manual_override = cfg.get("ec_windows", {}).get(point_id)
                         if manual_override is None:
                             manual_override = configured_line.get("windows", {}).get(str(ch))
@@ -318,6 +354,8 @@ class ECL2Processor:
                             peak_window = [center_guess - half_span, center_guess + half_span]
                             window_source = "energy_ratio"
                         detection_config = dict(cfg.get("peak_detection") or {})
+                        if self.analysis_contract:
+                            detection_config["background_model"] = configured_analysis.get("background", "lin")
                         if configured_line.get("centers", {}).get(str(ch)) is not None:
                             detection_config.update(expected_center=configured_line["centers"][str(ch)],
                                                     expected_energy_keV=float(peak_E))
@@ -344,7 +382,7 @@ class ECL2Processor:
                                 signal_df=signal["df"],
                                 background_df=bkg_df_ch if bkg_df_ch is not None else signal["df"].iloc[0:0],
                                 channel=ch,
-                                background_channel=bkg_ch,
+                                background_channel=ch if self.analysis_contract else bkg_ch,
                                 bin_width=bin_width,
                                 forced_window=peak_window,
                                 forced_peak_energy=peak_E,
@@ -391,7 +429,19 @@ class ECL2Processor:
                             "background_input_quality": fit["background_input_quality"],
                             "window_manual": manual_override is not None,
                             "window_source": window_source,
-                            "normalization": "utc_duration",
+                            "normalization": fit.get("normalization", "utc_duration"),
+                            "primary_exposure_s": fit.get("primary_exposure_s"),
+                            "background_exposure_s": fit.get("background_exposure_s"),
+                            "exposure_unit": "s",
+                            "center_sigma_covariance": fit.get("center_sigma_covariance"),
+                            "height": fit.get("height"), "height_std": fit.get("height_std"),
+                            "amplitude_kind": "area", "resolution_unit": "percent",
+                            "ordinate": fit.get("ordinate", "counts/s"),
+                            "redchi": fit.get("redchi"), "ndf": fit.get("ndf"),
+                            "boundary_hits": fit.get("boundary_hits", []),
+                            "native_time": fit.get("native_time"),
+                            "primary_events": fit["n_events"], "background_events": fit["n_bkg_events"],
+                            "background_slot": bkg_ch,
                             "signal_exposure_minutes": signal.get("exposure_minutes"),
                             "background_exposure_minutes": bkg_exposure if data_type == "src" else None,
                             "signal_file": signal["parquet"],
@@ -400,7 +450,7 @@ class ECL2Processor:
                         records.append(rec)
                         plot_rows.append({"record": rec, "plot": plot_data})
 
-                if only_point is None and data_type == "x" and len(records) >= 2:
+                if not self.analysis_contract and only_point is None and data_type == "x" and len(records) >= 2:
                     ch_fits: dict[int, dict[str, Any]] = {}
                     for rec in records:
                         ch_fits[rec["channel"]] = rec
@@ -537,6 +587,8 @@ class ECL2Processor:
 
                 fig_path = self.layout.get_ec_l2_figure(fig_name)
                 self._plot_energy_file(energy_key, plot_rows, fig_path)
+                canonical = self._publish_canonical(energy_key, plot_rows, fig_path) if self.analysis_contract else []
+                results.setdefault("canonical", []).extend(canonical)
 
                 results["outputs"].append({
                     "energy": energy_key,
@@ -546,6 +598,7 @@ class ECL2Processor:
                     "channels_updated": channels_updated,
                     "json": json_path.name,
                     "figure": fig_path.name,
+                    "canonical": canonical,
                 })
                 results["n_processed"] += 1
                 print(f"✓ EC L2: {energy_key} ({len(records)} records) -> {fig_path.name}")
@@ -561,6 +614,93 @@ class ECL2Processor:
                                       "peak_keV": only_point[2], "error": "No corrected input for only_point"})
         write_json(self.layout.get_ec_l2_json("L2_manifest.json"), results)
         return results
+
+    def _publish_canonical(self, energy_key, plot_rows, fit_figure):
+        """Package the same computed spectra and fits under the new L1 contract."""
+        from ...common.cali_contract import publish_l1
+        products = []
+        energies = sorted({float(item["record"]["E"]) for item in plot_rows})
+        for energy in energies:
+            rows = [item for item in plot_rows if np.isclose(item["record"]["E"], energy)]
+            records = [item["record"] for item in rows]
+            spectra = []
+            for item in rows:
+                rec, plot = item["record"], item["plot"]
+                width = np.asarray(plot["bin_right"]) - np.asarray(plot["bin_left"])
+                spectra.append(pd.DataFrame({
+                    "channel": rec["channel"], "x": plot["mids"],
+                    "bin_left": plot["bin_left"], "bin_right": plot["bin_right"],
+                    "net_rate": plot["net"] * width, "err": plot["net_err"] * width,
+                    "density": plot["net"], "density_err": plot["net_err"],
+                    "primary_rate": plot["primary_rate"], "background_rate": plot["background_rate"],
+                }))
+            source_stem = records[0]["signal_file"].removesuffix("_corr.l1.parquet")
+            analysis_id = f"{source_stem if energy_key.startswith('src_') else energy_key}_E{energy:g}"
+            meta = {
+                "analysis_contract": self.analysis_contract, "energy_keV": energy,
+                "l0_root": str(self.layout.get_ec_l0_dir().resolve()),
+                "l0_sources": {str(rec["channel"]): {
+                    "primary": rec.get("signal_acquisition", {}),
+                    "background": rec.get("background_acquisition", {}),
+                } for rec in records},
+                "roles": {str(rec["channel"]): {
+                            "primary": Path(rec.get("signal_acquisition", {}).get("native", {}).get("l0_node", rec["signal_file"])).name,
+                            "background": Path(rec.get("background_acquisition", {}).get("native", {}).get("l0_node", rec["background_file"])).name,
+                            "physical_channel": rec["channel"],
+                            "background_slot": rec["background_slot"]} for rec in records},
+                "corr": {key: value for key, value in records[0].get("signal_tb_correction", {}).items()
+                         if key in ("mode", "mapping", "tb_model", "tb_model_sha256", "channel_models", "ref_temp_C", "ref_bias_V")},
+                "background_corr": {str(rec["channel"]): rec.get("background_tb_correction", {}) for rec in records},
+                "time": {str(rec["channel"]): rec.get("native_time") for rec in records},
+                "fit": {"bin_width": records[0]["bin_width"], "scale_covar": False,
+                        "weights": "1/pair_gehrels_density_error", "configuration": self.analysis_config},
+                "ordinate": "counts/(s*ADC)", "normalization_quality": "per_channel_event_span",
+                "history": {str(rec["channel"]): {
+                    "primary": rec.get("signal_tb_correction", {}).get("conditions"),
+                    "background": rec.get("background_tb_correction", {}).get("conditions"),
+                } for rec in records},
+            }
+            products.append(publish_l1(self.layout.product_root, self.payload_name, "ec", analysis_id,
+                                      records, pd.concat(spectra, ignore_index=True), meta,
+                                      fit_figure=fit_figure,
+                                      selection_figures=self._selection_figures(records)))
+        return products
+
+    def _selection_figures(self, records):
+        """Plot actual role HK rows and the platform selected for correction."""
+        import io
+        figures = {}
+        for role in ("signal", "background"):
+            fig, axes = plt.subplots(2, 1, figsize=(9, 5), sharex=True, constrained_layout=True)
+            for rec in records:
+                ch = rec["channel"]
+                acquisition = rec.get(f"{role}_acquisition", {})
+                native = acquisition.get("native", {})
+                node = native.get("l0_node")
+                if not node:
+                    raise ValueError("Canonical EC selection requires its native L0 HK source")
+                hk = pd.read_parquet(Path(node) / "hk.parquet")
+                condition = rec.get(f"{role}_tb_correction", {}).get("conditions", {}) or {}
+                selected = condition.get("selection", {}).get("selected_source_idx", [])
+                keep = hk["source_idx"].isin(selected)
+                for ax, column in zip(axes, (f"sipm_temp_ch{ch}", f"bias_ch{ch}"), strict=True):
+                    ax.plot(hk["source_idx"], hk[column], color=".75", linewidth=.7)
+                    ax.plot(hk.loc[keep, "source_idx"], hk.loc[keep, column], ".", markersize=2, label=f"CH{ch}")
+            axes[0].set_ylabel("Temperature (°C)")
+            axes[1].set_ylabel("Bias (V)")
+            axes[1].set_xlabel("HK source row")
+            axes[0].legend()
+            stream = io.BytesIO()
+            fig.savefig(stream, format="png", dpi=130)
+            plt.close(fig)
+            figures[f"selection_{'primary' if role == 'signal' else 'background'}.png"] = stream.getvalue()
+        return figures
+
+    def _read_input(self, path):
+        if self.analysis_contract:
+            from ...common.native_time import read_analysis_events
+            return read_analysis_events(path)
+        return read_parquet(path)
 
     def _load_source_windows(self) -> dict[str, Any]:
         """读取源谱手选窗口配置（每源、每通道、每峰）。
@@ -629,11 +769,18 @@ class ECL2Processor:
         amplitude: np.ndarray,
         time_axis: np.ndarray,
         edges: np.ndarray,
+        *, exposure_s: float | None = None, density: bool = False,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         counts, _ = np.histogram(amplitude, bins=edges)
-        duration = self._duration_from_time_axis(time_axis)
+        duration = self._duration_from_time_axis(time_axis) if exposure_s is None else exposure_s
+        if not np.isfinite(duration) or duration <= 0:
+            raise ValueError("A positive, verified exposure is required for rate normalization")
         rate = counts.astype(float) / duration
-        err = np.sqrt(np.maximum(counts, 1.0)) / duration
+        if density:
+            err = np.where(counts >= 5, np.sqrt(counts), 1 + np.sqrt(counts + .75)) / duration
+            rate, err = rate / np.diff(edges), err / np.diff(edges)
+        else:
+            err = np.sqrt(np.maximum(counts, 1.0)) / duration
         mids = 0.5 * (edges[:-1] + edges[1:])
         return rate, err, mids
 
@@ -680,6 +827,32 @@ class ECL2Processor:
         channel_map: dict[int, dict[str, Any]],
         bin_width: float = BIN_WIDTH,
     ) -> tuple[int, dict[str, Any]]:
+        if self.analysis_contract:
+            rotation = self.analysis_config.get("shared", {}).get("background_slots", [1, 2, 3, 0])
+            slot = int(rotation[target_channel])
+            entry = self._active_analysis
+            if not entry:
+                energy = self._energy_sort_key(str(channel_map[target_channel].get("stem", "")))
+                entry = self.analysis_config.get("xray", {}).get(f"{energy:g}", {})
+            references = entry.get("background_ids", entry.get("background_files", []))
+            if references:
+                if len(references) != 4:
+                    raise ValueError("X-ray background configuration requires one acquisition per physical channel")
+                reference = Path(references[target_channel]).name
+                matches = [key for key, item in channel_map.items()
+                           if item.get("acquisition_id") and Path(item["acquisition_id"]).name == reference]
+                if len(matches) != 1:
+                    raise ValueError(f"CH{target_channel}: explicitly configured background {reference} is unavailable")
+                slot = matches[0]
+            if slot not in channel_map:
+                raise ValueError(f"CH{target_channel}: required background acquisition slot CH{slot} is missing")
+            item = dict(channel_map[slot])
+            full = item.get("full_df", item["df"])
+            physical = full[full["channel"] == target_channel].copy()
+            if len(physical) < 2:
+                raise ValueError(f"CH{target_channel}: slot CH{slot} contains no usable same-physical-channel background")
+            item["df"] = physical
+            return slot, item
         channel_map = {ch: item for ch, item in channel_map.items()
                        if not unsupported_spectral_model(self.response_payload, ch)}
         signal_df = channel_map[target_channel]["df"]
@@ -749,6 +922,7 @@ class ECL2Processor:
         hi: float,
         bin_width: float,
         sigma_guess: float | None = None,
+        center_anchor: float | None = None,
     ):
         if mode == "gaus":
             model = GaussianModel(prefix="g_")
@@ -756,6 +930,10 @@ class ECL2Processor:
             model = GaussianModel(prefix="g_") + LinearModel(prefix="b_")
         elif mode == "exp + gaus":
             model = GaussianModel(prefix="g_") + ExponentialModel(prefix="e_")
+        elif mode == "quad + gaus":
+            model = GaussianModel(prefix="g_") + QuadraticModel(prefix="b_")
+        elif mode == "gaus + gaus":
+            model = GaussianModel(prefix="g_") + GaussianModel(prefix="bk_")
         else:
             raise ValueError(mode)
 
@@ -764,18 +942,53 @@ class ECL2Processor:
         sigma_guess = sigma_guess or max((hi - lo) / 8.0, bin_width)
         params["g_sigma"].set(value=sigma_guess, min=max(0.5 * bin_width, sigma_guess / 3), max=3 * sigma_guess)
         params["g_amplitude"].set(
-            value=float(np.max(y) * max((hi - lo) / 4.0, bin_width) * np.sqrt(2.0 * np.pi)),
+            value=float(np.max(y) * (sigma_guess if self.analysis_contract else max((hi - lo) / 4.0, bin_width)) * np.sqrt(2.0 * np.pi)),
             min=0.0,
         )
         if "b_intercept" in params:
-            params["b_intercept"].set(value=float(max(np.percentile(y, 20), 0.0)), min=0.0)
+            params["b_intercept"].set(value=float(np.percentile(y, 20)) if self.analysis_contract else float(max(np.percentile(y, 20), 0.0)),
+                                      min=-np.inf if self.analysis_contract else 0.0)
             params["b_slope"].set(value=0.0)
         if "e_amplitude" in params:
             params["e_amplitude"].set(value=float(max(np.percentile(y, 25), 1e-9)), min=0.0)
             params["e_decay"].set(value=max((hi - lo) / 3.0, 5.0), min=1.0, max=2000.0)
+        if "bk_amplitude" in params:
+            params["bk_center"].set(value=float(lo + .25 * (hi - lo)), min=lo, max=hi)
+            params["bk_sigma"].set(value=max((hi - lo) / 5, bin_width), min=bin_width / 2, max=hi - lo)
+            params["bk_amplitude"].set(value=max(float(np.max(y)), 1e-12) * (hi - lo) / 4, min=0)
+        if "b_a" in params:
+            params["b_a"].set(value=0)
+            params["b_b"].set(value=0)
+            params["b_c"].set(value=float(np.percentile(y, 20)))
+
+        if self.analysis_contract:
+            # Match the configured native fit: initialize the peak from the
+            # right half when a local continuum/overlapping line is present,
+            # then estimate that background from the residual. Peak-finder
+            # widths select a window; they do not set a lower fitted width.
+            target = GaussianModel(prefix="g_")
+            nuisance = {
+                "lin + gaus": LinearModel(prefix="b_"),
+                "exp + gaus": ExponentialModel(prefix="e_"),
+                "quad + gaus": QuadraticModel(prefix="b_"),
+                "gaus + gaus": GaussianModel(prefix="bk_"),
+            }.get(mode)
+            start = len(x) // 2 if nuisance is not None else 0
+            params = target.guess(y[start:], x=x[start:])
+            if center_anchor is not None and x[0] <= center_anchor <= x[-1]:
+                params["g_center"].set(value=float(center_anchor))
+            if nuisance is not None:
+                remainder = y - target.eval(params, x=x)
+                params += nuisance.guess(remainder, x=x)
+            params["g_amplitude"].set(min=0)
+            params["g_center"].set(min=float(x[0]), max=float(x[-1]))
+            params["g_sigma"].set(min=0, max=float(x[-1] - x[0]) / 3)
 
         weights = 1.0 / np.maximum(err, np.finfo(float).eps)
-        result = model.fit(y, params, x=x, weights=weights)
+        fit_options = {"scale_covar": not bool(self.analysis_contract)}
+        if self.analysis_contract:
+            fit_options["max_nfev"] = int(self.analysis_config.get("shared", {}).get("fit", {}).get("max_nfev", 10000))
+        result = model.fit(y, params, x=x, weights=weights, **fit_options)
         if not result.success:
             raise RuntimeError(f"{mode} fit failed")
         return result, self._calculate_rsquared(y, result.best_fit)
@@ -790,11 +1003,17 @@ class ECL2Processor:
         hi: float,
         bin_width: float,
         sigma_guess: float | None = None,
+        center_anchor: float | None = None,
     ):
         candidates = []
-        for mode in ("gaus", "lin + gaus", "exp + gaus"):
+        modes = ("gaus", "lin + gaus", "exp + gaus")
+        if self.analysis_contract:
+            modes = ({None: "gaus", "lin": "lin + gaus", "exp": "exp + gaus",
+                      "quad": "quad + gaus", "gaus": "gaus + gaus"}.get(self._background_model, "lin + gaus"),)
+        for mode in modes:
             try:
-                result, rsq = self._fit_with_mode(mode, x, y, err, peak_x, lo, hi, bin_width, sigma_guess)
+                result, rsq = self._fit_with_mode(mode, x, y, err, peak_x, lo, hi, bin_width,
+                                                sigma_guess, center_anchor)
                 criterion = float(np.sum(((y - result.best_fit) / err) ** 2)) + 2 * result.nvarys
                 candidates.append((mode, result, rsq, criterion))
             except Exception:
@@ -827,15 +1046,35 @@ class ECL2Processor:
         signal_time = signal_df["utc"].to_numpy(dtype=float)
         bkg_amp = background_df["amp_corr"].to_numpy(dtype=float)
         bkg_time = background_df["utc"].to_numpy(dtype=float)
-        upper = max(
-            float(np.percentile(signal_amp, 99.9)) if signal_amp.size else 160.0,
-            float(np.percentile(bkg_amp, 99.5)) if bkg_amp.size else 160.0,
-        ) + 50.0
+        if self.analysis_contract:
+            upper = float(self.analysis_config.get("shared", {}).get("adc_max", 16384.))
+            if not np.isfinite(upper) or upper <= 0:
+                raise ValueError("adc_max must be finite and positive")
+        else:
+            upper = max(
+                float(np.percentile(signal_amp, 99.9)) if signal_amp.size else 160.0,
+                float(np.percentile(bkg_amp, 99.5)) if bkg_amp.size else 160.0,
+            ) + 50.0
         edges = np.arange(0.0, max(upper, 160.0) + bin_width, bin_width)
-        spec, spec_err, mids = self._build_rate_spectrum(signal_amp, signal_time, edges)
-        bkg_spec, bkg_err, _ = self._build_rate_spectrum(bkg_amp, bkg_time, edges)
+        extra = {}
+        if self.analysis_contract:
+            from ...common.native_time import event_span
+            primary_span = event_span(signal_df, require_ec=True)
+            background_span = event_span(background_df, require_ec=True)
+            tp, tb = primary_span["span_s"], background_span["span_s"]
+            spec, spec_err, mids = self._build_rate_spectrum(signal_amp, signal_time, edges, exposure_s=tp, density=True)
+            bkg_spec, bkg_err, _ = self._build_rate_spectrum(bkg_amp, bkg_time, edges, exposure_s=tb, density=True)
+            extra = {"primary_exposure_s": tp, "background_exposure_s": tb,
+                     "native_time": {"primary": primary_span, "background": background_span},
+                     "ordinate": "counts/(s*ADC)", "normalization": "per_channel_event_span",
+                     "bin_left": edges[:-1], "bin_right": edges[1:],
+                     "primary_rate": spec * np.diff(edges), "background_rate": bkg_spec * np.diff(edges)}
+        else:
+            spec, spec_err, mids = self._build_rate_spectrum(signal_amp, signal_time, edges)
+            bkg_spec, bkg_err, _ = self._build_rate_spectrum(bkg_amp, bkg_time, edges)
         return {"mids": mids, "spec": spec, "bkg_spec": bkg_spec,
                 "net": spec - bkg_spec, "net_err": np.sqrt(spec_err**2 + bkg_err**2),
+                **extra,
                 "signal_input_quality": signal_quality, "background_input_quality": background_quality}
 
     def _fit_energy_spectrum(
@@ -852,6 +1091,10 @@ class ECL2Processor:
     ) -> tuple[dict[str, Any], dict[str, np.ndarray]]:
         if reason := unsupported_spectral_model(self.response_payload, channel):
             raise ValueError(reason)
+        if self.analysis_contract:
+            signal_df = signal_df[signal_df["channel"] == channel].copy()
+            background_df = background_df[background_df["channel"] == channel].copy()
+        self._background_model = (peak_config or {}).get("background_model", "lin")
         prepared = self._prepare_spectrum(signal_df, background_df, bin_width)
         mids, spec, bkg_spec, net, net_err = (
             prepared[key] for key in ("mids", "spec", "bkg_spec", "net", "net_err")
@@ -873,8 +1116,10 @@ class ECL2Processor:
         if len(x_fit) < 8:
             raise RuntimeError("Resolved peak has too few fit bins; reduce bin_width or select a wider window")
         mode, result, rsquared, _ = self._select_best_fit(
-            x_fit, y_fit, err_fit, peak_x, max(lo, peak_x - 1.5 * candidate.sigma),
-            min(hi, peak_x + 1.5 * candidate.sigma), bin_width, candidate.sigma,
+            x_fit, y_fit, err_fit, peak_x,
+            lo if self.analysis_contract else max(lo, peak_x - 1.5 * candidate.sigma),
+            hi if self.analysis_contract else min(hi, peak_x + 1.5 * candidate.sigma), bin_width, candidate.sigma,
+            center_anchor=(peak_config or {}).get("expected_center"),
         )
         quality = fit_quality(result, x_fit, y_fit, err_fit,
                               selection_warnings=detection.get("selection_warnings"))
@@ -888,6 +1133,16 @@ class ECL2Processor:
         amplitude_err = float(abs(result.params["g_amplitude"].stderr or np.nan))
         fwhm = float(2.0 * np.sqrt(2.0 * np.log(2.0)) * sigma)
         fwhm_err = float(2.0 * np.sqrt(2.0 * np.log(2.0)) * sigma_err) if np.isfinite(sigma_err) else float("nan")
+        center_sigma_covariance = None
+        height = amplitude / (sigma * np.sqrt(2 * np.pi))
+        height_std = None
+        if result.covar is not None:
+            names = result.var_names
+            ic, isg, ia = (names.index(name) for name in ("g_center", "g_sigma", "g_amplitude"))
+            center_sigma_covariance = float(result.covar[ic, isg])
+            gradient = np.zeros(len(names))
+            gradient[ia], gradient[isg] = 1 / (sigma * np.sqrt(2 * np.pi)), -height / sigma
+            height_std = float(np.sqrt(max(float(gradient @ result.covar @ gradient), 0)))
         res = float(fwhm / center * 100.0) if center > 0 else 0.0
         res_err = (
             float(
@@ -899,12 +1154,19 @@ class ECL2Processor:
             if np.isfinite(center_err) and np.isfinite(sigma_err) and center != 0
             else float("nan")
         )
+        if self.analysis_contract and center_sigma_covariance is not None:
+            factor = 100 * 2 * np.sqrt(2 * np.log(2))
+            variance = factor**2 * ((sigma_err / center)**2 + (sigma * center_err / center**2)**2
+                                     - 2 * sigma * center_sigma_covariance / center**3)
+            res_err = float(np.sqrt(max(variance, 0)))
 
         background_fit = np.zeros_like(x_fit)
         if "b_" in comps:
             background_fit += comps.get("b_", 0)
         if "e_" in comps:
             background_fit += comps.get("e_", 0)
+        if "bk_" in comps:
+            background_fit += comps["bk_"]
 
         nominal_energy = float(forced_peak_energy) if forced_peak_energy is not None else self._energy_sort_key(energy_key)
         fit = {
@@ -919,6 +1181,15 @@ class ECL2Processor:
             "resolution_err": res_err,
             "FWHM": fwhm,
             "FWHM_err": fwhm_err,
+            "center_sigma_covariance": center_sigma_covariance,
+            "height": height, "height_std": height_std,
+            "redchi": float(result.redchi), "ndf": int(result.nfree),
+            "boundary_hits": quality.get("boundary_hits", []),
+            "primary_exposure_s": prepared.get("primary_exposure_s"),
+            "background_exposure_s": prepared.get("background_exposure_s"),
+            "normalization": prepared.get("normalization", "utc_duration"),
+            "ordinate": prepared.get("ordinate", "counts/s"),
+            "native_time": prepared.get("native_time"),
             "lo": float(lo),
             "hi": float(hi),
             "fit_mode": mode,
@@ -939,6 +1210,9 @@ class ECL2Processor:
             "spec": spec,
             "bkg_spec": bkg_spec,
             "net": net,
+            "net_err": net_err,
+            "bin_left": prepared.get("bin_left"), "bin_right": prepared.get("bin_right"),
+            "primary_rate": prepared.get("primary_rate"), "background_rate": prepared.get("background_rate"),
             "x_fit": x_fit,
             "best_fit": result.best_fit,
             "background_fit": background_fit,
@@ -984,19 +1258,29 @@ class ECL2Processor:
                 fit_hi=row["hi"],
                 center=row["center"],
                 raw_label=f"raw ({DISPLAY_BIN_MERGE}x bin)",
-                bkg_label=f"bkg ch{row['background_channel']}",
+                bkg_label=(f"bkg CH{row['background_channel']} / slot {row['background_slot']}" if self.analysis_contract
+                           else f"bkg ch{row['background_channel']}"),
                 net_label="net",
             )
             style_title(
                 ax,
                 f"Ch{row['channel']}  E={row['E']:.1f}keV  center={row['center']:.2f}±{row['center_err']:.2f}\n"
-                f"mode={row['fit_mode']}, R²={row['rsquared']:.4f}",
+                + (f"mode={row['fit_mode']}, χ²ν={row['redchi']:.2f}" if self.analysis_contract
+                   else f"mode={row['fit_mode']}, R²={row['rsquared']:.4f}"),
             )
-            style_axes(ax, xlabel="Corrected ADC", ylabel="Count Rate")
+            style_axes(ax, xlabel="Corrected ADC", ylabel="Counts/(s·ADC)" if self.analysis_contract else "Count Rate")
 
             fit_width = max(row["hi"] - row["lo"], 8.0 * max(row["sigma"], row.get("bin_width", BIN_WIDTH)), 60.0)
             x_lo = 0.0
             x_hi = min(float(pdata["mids"][-1]), max(row["hi"], row["center"] + 1.25 * fit_width) + 0.25 * fit_width)
+            if self.analysis_contract:
+                x_lo = max(0., row["lo"] - .25 * fit_width)
+                x_hi = min(float(pdata["mids"][-1]), row["hi"] + .25 * fit_width)
+                visible = (mids_view >= x_lo) & (mids_view <= x_hi)
+                values = np.concatenate([spec_view[visible], bkg_view[visible], net_view[visible], pdata["best_fit"]])
+                bottom, top = float(np.min(values)), float(np.max(values))
+                margin = max((top - bottom) * .08, np.finfo(float).eps)
+                ax.set_ylim(bottom - margin, top + margin)
             ax.set_xlim(x_lo, x_hi)
             style_legend(ax)
 

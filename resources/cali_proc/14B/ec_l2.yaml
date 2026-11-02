@@ -1,0 +1,9 @@
+payload: 14B
+l1_config: ec_l1.yaml
+fit:
+  split_low_keV: 51.0
+  split_high_keV: 55.0
+  energy: ODR fixed energy anchors with ADC errors and unscaled covariance
+  resolution: direct R with sigma_R and unscaled covariance
+source_band_policy: 'natural energy bands: source anchors are high-band points'
+gap_points_preserved: [51.0, 53.0]

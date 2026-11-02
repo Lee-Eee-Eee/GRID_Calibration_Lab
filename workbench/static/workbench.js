@@ -71,7 +71,7 @@ function updateSpectralModelControls() {
   }
   $("l1-fit-all-channels").textContent = hasPlasticChannel() ? "拟合此文件 · CH 0–2" : "拟合此文件 · 四通道";
   $("fit-next-step").hidden = !isPeakReviewLayer();
-  $("review-next-layer").textContent = state.layer === "TB_L1" ? "TB L2 · 曲面拟合 →" : "EC L3 · 能量刻度 →";
+  $("review-next-layer").textContent = state.layer === "TB_L1" ? "TB L2 · 曲面拟合 →" : `${layerDisplay("EC_L3")} · 能量刻度 →`;
 }
 function chartMessage(id, text) { const chart = $(id); if (window.Plotly && chart.data) Plotly.purge(chart); clear(chart).append(node("p", "chart-loading", text)); }
 function valueText(value) { return value === null || value === undefined ? "—" : Array.isArray(value) ? value.join(" · ") : typeof value === "object" ? JSON.stringify(value) : String(value); }
@@ -96,7 +96,20 @@ function jobErrorText(error) {
   });
   return [...new Set(messages)].slice(0, 3).join("；") || String(error || "计算失败");
 }
-function activeLayer() { return layers.find((item) => item.id === state.layer); }
+function nativeContract() { return state.run?.analysis_contract === "cali_proc@0.5"; }
+function layerDisplay(id) { return nativeContract() ? ({EC_L1:"EC corr",EC_L2:"EC L1",EC_L3:"EC L2"}[id] || String(id).replace("_"," ")) : id; }
+function activeLayer() {
+  const layer = layers.find((item) => item.id === state.layer);
+  if (!nativeContract()) return layer;
+  const views = {
+    TB_L0:{title:"解包与清洗",heading:"TB 采集数据",input:"原始 SCI / HK",output:"EXP · 清洗后的 L0",process:"EXP 解码 → L0 清洗"},
+    EC_L0:{title:"解包与清洗",heading:"EC 采集数据",input:"原始 SCI / HK",output:"EXP · 清洗后的 L0",process:"EXP 解码 → L0 清洗"},
+    EC_L1:{title:"温偏校正",heading:"EC 温偏校正",input:"EC L0 + TB L2",output:"corr · amp_corr",process:"各角色 HK 平台均值校正"},
+    EC_L2:{title:"能谱与单点拟合",heading:"EC 能谱与单点拟合",input:"L0 → corr",output:"L1 · points / spectra / meta",process:"本通道配对 · 曝光与密度谱"},
+    EC_L3:{title:"能量关系与分辨率",heading:"EC 能量刻度与分辨率",input:"EC L1 单点",output:"L2 · 分通道模型与 Meta",process:"分段 ODR · 固定能量 / ADC 误差"}
+  };
+  return {...layer,...views[layer.id]};
+}
 function viewContext() { return `${state.run?.id}:${state.layer}:${state.channel}`; }
 function plotContext() { return `${viewContext()}:${state.loadToken}:${state.spectrumToken}`; }
 function isUnpackLayer() { return ["TB_L0", "EC_L0"].includes(state.layer); }
@@ -192,13 +205,13 @@ function renderNavigation() {
     for (const layer of layers.filter((item) => item.id.startsWith(family))) {
       const button = node("button", `stage-nav-button${state.layer === layer.id ? " active" : ""}`);
       button.type = "button"; button.dataset.layer = layer.id; button.setAttribute("aria-current", state.layer === layer.id ? "step" : "false");
-      button.append(node("span", "nav-layer", layer.id.slice(-2)), node("span", "", layer.title));
+      button.append(node("span", "nav-layer", (nativeContract() ? (["TB_L0","EC_L0"].includes(layer.id) ? "EXP/L0" : layerDisplay(layer.id).split(" ").pop()) : layer.id.slice(-2))), node("span", "", nativeContract() && layer.id === "EC_L3" ? "能量关系与分辨率" : layer.title));
       const stage = state.run?.stages?.[layer.id];
       const navStatus = stage?.stale && normalizedStatus(stage?.status) === "succeeded" ? "stale" : normalizedStatus(stage?.status);
       const coverage = stage?.acquisition_coverage, partial = coverage?.completed > 0 && coverage.completed < coverage.required && !["running","queued","failed"].includes(navStatus);
       const statusLabel = partial ? `已处理 ${coverage.completed} / ${coverage.required}` : statusNames[navStatus] || "未运行";
-      button.title = `${layer.id} · ${layer.title} · ${statusLabel}`;
-      button.setAttribute("aria-label", `${layer.id} ${layer.title}，状态：${statusLabel}`);
+      button.title = `${layerDisplay(layer.id)} · ${layer.title} · ${statusLabel}`;
+      button.setAttribute("aria-label", `${layerDisplay(layer.id)} ${layer.title}，状态：${statusLabel}`);
       const dot = node("span", `nav-status ${partial ? "succeeded" : navStatus}`); dot.title = statusLabel; dot.setAttribute("aria-hidden", "true"); button.append(dot);
       if (state.run) { const shortStatus = { succeeded: "已计算", partial: "部分完成", failed: "失败", stale: "待更新", running: "运行中", queued: "排队中" }; button.append(node("span", "nav-status-text", partial ? `${coverage.completed}/${coverage.required}` : shortStatus[navStatus] || "未运行")); }
       button.addEventListener("click", handleError(() => selectLayer(layer.id))); group.append(button);
@@ -266,11 +279,11 @@ function renderStage() {
   if (!state.run) return;
   ++state.ecToken;
   const layer = activeLayer(); const stage = state.run.stages?.[layer.id] || {};
-  $("stage-number").textContent = layer.id.slice(-2);
+  $("stage-number").textContent = (nativeContract() ? (["TB_L0","EC_L0"].includes(layer.id) ? "EXP/L0" : layerDisplay(layer.id).split(" ").pop()) : layer.id.slice(-2));
   $("stage-title").textContent = layer.heading;
-  $("stage-description").textContent = stage.purpose || layer.description;
-  $("stage-input").textContent = valueText(stage.input || layer.input);
-  $("stage-output").textContent = valueText(stage.output || layer.output);
+  $("stage-description").textContent = nativeContract() ? layer.process : stage.purpose || layer.description;
+  $("stage-input").textContent = valueText(nativeContract() ? layer.input : stage.input || layer.input);
+  $("stage-output").textContent = valueText(nativeContract() ? layer.output : stage.output || layer.output);
   $("stage-dependency").textContent = valueText(stage.dependencies || layer.dependency);
   const status = stage.stale && normalizedStatus(stage.status) === "succeeded" ? "stale" : normalizedStatus(stage.status);
   $("stage-status").replaceWith(Object.assign(badge(status), { id: "stage-status" }));
@@ -312,7 +325,7 @@ function renderDependencies() {
   banner.hidden = !state.run.dependency_stale;
   banner.textContent = `本次 EC 产物与选定 TB 参数或当前配置不一致，需要从 EC L1 重新校正。`;
   banner.hidden = !ecLayer || state.layer === "EC_L0" || !state.run.dependency_stale;
-  banner.textContent = "TB 参数或输入已更新，运行 EC L1 更新校正谱。";
+  banner.textContent = `TB 参数或输入已更新，运行 ${layerDisplay("EC_L1").replace("_", " ")} 更新校正谱。`;
   const unavailable = state.run.stages?.[state.layer]?.unavailable_reason;
   if (unavailable) { banner.hidden = false; banner.textContent = unavailable; }
   else if (state.layer === "EC_L0") banner.hidden = true;
@@ -429,7 +442,7 @@ function renderJobs() {
     const selectedPeak = pointId ? Number.isFinite(Number(pointParts.at(-1))) ? `${number(pointParts.at(-1), 3)} keV · CH ${pointParts.at(-2)} · ${pointId}` : String(pointId) : "";
     const only = Array.isArray(job.config?.only) ? job.config.only.join(", ") : job.config?.only;
     const scope = selectedPeak || (job.stem || only ? `当前文件 · ${job.stem || only}` : job.scope === "all" || job.representative === false ? "全部数据" : job.scope === "selected" ? "所选输入" : "代表样例");
-    summary.append(node("strong", "job-layer", job.layer || "任务"), badge(job.status), node("span", "tiny-text", scope), node("time", "job-time", timestamp(job.finished_at || job.started_at || job.created_at)));
+    summary.append(node("strong", "job-layer", layerDisplay(job.layer || "任务")), badge(job.status), node("span", "tiny-text", scope), node("time", "job-time", timestamp(job.finished_at || job.started_at || job.created_at)));
     row.append(summary);
     if (job.outputs?.length) { const files=node("div","job-output-files"); for (const file of job.outputs) files.append(outputFilePreview(file,job.id)); row.append(files); }
     if (job.message || job.result?.message) row.append(node("div", "job-details", valueText(job.message || job.result.message)));
@@ -553,7 +566,7 @@ function residualPercent(point) {
 
 function filteredL1Files() {
   const search = $("l1-file-search").value.trim().toLowerCase(), filter = $("l1-file-filter").value || "all";
-  return (state.l1Overview?.files || []).filter(file => file.has_l0 && (!search || `${file.stem} ${file.channels[state.channel]?.temp ?? ""} ${file.channels[state.channel]?.bias ?? ""}`.toLowerCase().includes(search)) && (filter === "all" || file.status === filter));
+  return (state.l1Overview?.files || []).filter(file => (file.has_l0 || file.has_saved_spectrum) && (!search || `${file.stem} ${file.channels[state.channel]?.temp ?? ""} ${file.channels[state.channel]?.bias ?? ""}`.toLowerCase().includes(search)) && (filter === "all" || file.status === filter));
 }
 
 const l1QualityStates = {
@@ -569,7 +582,7 @@ function l1QualityContext() { return `${state.run?.id}:${state.layer}:${state.ch
 function l1QualityPoints(channel = state.channel) {
   return (state.l1Overview?.files || []).map(file => {
     const point = file.channels?.find(item => item.channel === channel) || {};
-    return { ...point, stem: file.stem, channel, id: point.id || `${state.run?.payload}:${file.stem}:${channel}`, has_l0: file.has_l0 };
+    return { ...point, stem: file.stem, channel, id: point.id || `${state.run?.payload}:${file.stem}:${channel}`, has_l0: file.has_l0 || file.has_saved_spectrum };
   });
 }
 function l1QualityStatus(point) {
@@ -668,16 +681,22 @@ function ecSourceContext() { return `${state.run?.id}:${state.channel}`; }
 function currentEcSourceKey() { return state.point?.energy_key || state.point?.stem || ""; }
 function ecSourceSpectra() { return state.ecPeakConfig?.spectra || []; }
 function currentEcSource() { return ecSourceSpectra().find(item => item.energy_key === currentEcSourceKey()); }
-function ecSourceInputSpec() { const file=state.spectrum?.point?.signal_file || state.point?.signal_file || currentEcSource()?.signal_file; return file && currentEcSourceKey().startsWith("src_") ? {stem:String(file).split(/[\\/]/).pop().replace(/_corr\.l1\.parquet$/,"")} : {}; }
+function ecSourceInputSpec() { const point=state.spectrum?.point || state.point; const file=ecObservationStem(point) || currentEcSource()?.signal_file; return file && currentEcSourceKey().startsWith("src_") ? {stem:String(file).split(/[\\/]/).pop().replace(/_corr\.l1\.parquet$/,"")} : {}; }
 function ecObservationStem(point) {
   const normalize = value => String(value).split(/[\\/]/).pop().replace(/_corr\.l1\.parquet$/i, "").replace(/\.l[01]\.parquet$/i, "");
-  if (point?.signal_file || point?.l1_stem) return normalize(point.signal_file || point.l1_stem);
   const key = point?.energy_key || point?.stem;
-  if (!key) return null;
-  if (!key.startsWith("src_")) return /_ch\d+$/i.test(key) ? key : `${key}_ch${point.channel ?? state.channel}`;
-  if (/_\d+(?:\.\d+)?m$/i.test(key)) return key;
+  if (!key) return point?.signal_file || point?.l1_stem ? normalize(point.signal_file || point.l1_stem) : null;
   const source = ecSourceSpectra().find(item => item.energy_key === key);
   const files = [...new Set((source?.source_files?.length ? source.source_files.map(file => file.name) : [source?.signal_file]).filter(Boolean).map(normalize))];
+  if (point?.signal_file || point?.l1_stem) {
+    const explicit = normalize(point.signal_file || point.l1_stem);
+    // Shared L1 indexes may use the upstream display alias. A unique current
+    // corrected observation supplies the actual filename for recomputation.
+    if (nativeContract() && point.contract_node && files.length === 1 && !files.includes(explicit)) return files[0];
+    return explicit;
+  }
+  if (!key.startsWith("src_")) return /_ch\d+$/i.test(key) ? key : `${key}_ch${point.channel ?? state.channel}`;
+  if (/_\d+(?:\.\d+)?m$/i.test(key)) return key;
   return files.length === 1 ? files[0] : null;
 }
 function ecPointMatchesObservation(point, stem) { return ecObservationStem(point) === stem; }
@@ -715,7 +734,7 @@ async function rebuildSpectrumInputs({context, family, stem}) {
     for (const {layer, ...spec} of plan) {
       if (context !== spectrumRecoveryContext()) return;
       const job = await executeJob(layer, {...spec, channel}, false);
-      if (job && normalizedStatus(job.status) !== "succeeded") throw new Error(`${layer.replace("_", " ")} 未完成，请查看运行记录。`);
+      if (job && normalizedStatus(job.status) !== "succeeded") throw new Error(`${layerDisplay(layer).replace("_", " ")} 未完成，请查看运行记录。`);
     }
     if (context === spectrumRecoveryContext()) { await loadSurfaceSafely(); notify("谱已重建。", "success"); }
   } finally {
@@ -924,7 +943,7 @@ function renderL1Workspace() {
   const index = files.findIndex(file => file.stem === state.point?.stem);
   $("l1-file-position").textContent = `${index < 0 ? "—" : index + 1} / ${files.length}`;
   $("l1-prev").disabled = index <= 0; $("l1-next").disabled = !files.length || index === files.length - 1;
-  $("point-count").textContent = `${all.filter(file => file.has_l0).length} 个文件`;
+  $("point-count").textContent = `${all.filter(file => file.has_l0 || file.has_saved_spectrum).length} 个文件`;
   const channels = all.find(file => file.stem === state.point?.stem)?.channels || [], summary = clear($("l1-channel-summary"));
   for (const channel of channels) {
     const unsupported = unsupportedSpectralModel(channel.channel, channel, null), attention = !unsupported && (channel.fit_status === "failed" || hasQualityWarning(channel)), fitted = !unsupported && ["fitted", "suspect", "rejected"].includes(channel.fit_status) && !channel.pending_window;
@@ -933,7 +952,8 @@ function renderL1Workspace() {
     card.setAttribute("aria-pressed", String(channel.channel === state.channel));
     const heading = node("span", "channel-heading"); heading.append(node("span", "channel-name", `CH ${channel.channel}`), node("span", "channel-state", unsupported ? "待定" : channel.pending_window ? "待重拟合" : channel.fit_status === "failed" ? "计算失败" : attention ? "疑似问题" : fitted ? "已拟合" : "未拟合"));
     const value = node("span", "channel-value", unsupported ? "—" : number(channel.center, 2)); if (!unsupported) value.append(node("small", "", " ADC"));
-    card.append(heading, value, node("span", "channel-quality", unsupported ? "康普顿响应" : `R² ${number(channel.rsquared, 4)}`));
+    const qualityLabel = nativeContract() ? `χ²ν ${number(channel.redchi ?? channel.chi2_reduced ?? channel.fit_quality?.redchi, 3)}` : `R² ${number(channel.rsquared, 4)}`;
+    card.append(heading, value, node("span", "channel-quality", unsupported ? "康普顿响应" : qualityLabel));
     card.title = unsupported || (channel.error ? jobErrorText(channel.error) : `CH ${channel.channel} · 峰位 ${number(channel.center, 3)} ± ${number(channel.center_err, 3)} ADC`);
     card.addEventListener("click", handleError(() => selectChannel(channel.channel))); summary.append(card);
   }
@@ -1070,7 +1090,7 @@ async function selectPoint(point) {
     $("window-lo").disabled = state.busy; $("window-hi").disabled = state.busy;
     $("window-status").textContent = unsupportedSpectralModel() ? "模型待定" : (state.run.pending_windows || []).includes(point.id) ? "待重拟合" : spectrum.fit ? "" : "未拟合";
     const params = clear($("spectrum-params"));
-    for (const [label, value] of [["峰位 / ADC", `${number(fit.center, 3)} ± ${number(fit.center_err, 3)}`], ["σ / ADC", number(fit.sigma, 3)], ["分辨率", fit.resolution === undefined ? "—" : `${number(fit.resolution * (fit.resolution > 1 ? 1 : 100), 2)}%`], ["R²", number(fit.rsquared, 5)], ["拟合模型", fit.fit_mode || fit.mode || "—"]]) {
+    for (const [label, value] of [["峰位 / ADC", `${number(fit.center, 3)} ± ${number(fit.center_err, 3)}`], ["σ / ADC", number(fit.sigma, 3)], ["分辨率", fit.resolution === undefined ? "—" : `${number(fit.resolution * (fit.resolution > 1 ? 1 : 100), 2)}%`], [nativeContract() ? "约化 χ²" : "R²", number(nativeContract() ? (fit.redchi ?? fit.chi2_reduced ?? fit.fit_quality?.redchi) : fit.rsquared, 5)], ["拟合模型", fit.fit_mode || fit.mode || "—"]]) {
       const item = node("div", "param-item"); item.append(node("span", "", label), node("strong", "", value)); params.append(item);
     }
     const quality = spectrum.input_quality;
@@ -1185,7 +1205,7 @@ async function renderL1Residual(data, range) {
   if (context !== plotContext()) return;
   $("residual-metric").textContent = `RMS ${number(Math.sqrt(residual.y.reduce((sum,y)=>sum+y*y,0)/residual.y.length),2)}`;
   $("residual-caption").textContent = "";
-  $("residual-chart").title = state.layer === "EC_L2" ? "(净计数率 − 拟合) / 传播误差；虚线 ±3" : "(计数 − 拟合) / √max(观测计数, 1)；虚线 ±3";
+  $("residual-chart").title = nativeContract() ? "(谱密度 − 拟合) / 传播误差；虚线 ±3" : state.layer === "EC_L2" ? "(净计数率 − 拟合) / 传播误差；虚线 ±3" : "(计数 − 拟合) / √max(观测计数, 1)；虚线 ±3";
 }
 
 function bindL1Axes() {
@@ -1433,7 +1453,7 @@ function showAnalysisView(view) {
 
 async function restorePolling(job) {
   const token = ++state.pollToken; const runId = state.run.id;
-  setBusy(true); notify(`${job.layer} 正在运行，已恢复进度。`, "info");
+  setBusy(true); notify(`${layerDisplay(job.layer)} 正在运行，已恢复进度。`, "info");
   try {
     while (["queued", "running", "pending"].includes(job.status) && token === state.pollToken) {
       await new Promise((resolve) => setTimeout(resolve, 1000));
@@ -1444,7 +1464,7 @@ async function restorePolling(job) {
     }
     if (token !== state.pollToken) return;
     await refreshRun(true);
-    notify(job.status === "partial" ? `${job.layer} 部分完成，可用结果已保存，请筛选需检查的文件。` : normalizedStatus(job.status) === "succeeded" ? `${job.layer} 计算完成。` : `${job.layer} 计算失败：${jobErrorText(job.error || "详见运行记录")}`, job.status === "partial" ? "warning" : normalizedStatus(job.status) === "succeeded" ? "success" : "error");
+    notify(job.status === "partial" ? `${layerDisplay(job.layer)} 部分完成，可用结果已保存，请筛选需检查的文件。` : normalizedStatus(job.status) === "succeeded" ? `${layerDisplay(job.layer)} 计算完成。` : `${layerDisplay(job.layer)} 计算失败：${jobErrorText(job.error || "详见运行记录")}`, job.status === "partial" ? "warning" : normalizedStatus(job.status) === "succeeded" ? "success" : "error");
   } finally { if (token === state.pollToken) setBusy(false); }
 }
 
@@ -1465,7 +1485,7 @@ async function executeJob(layer, extra = {}, manageBusy = true) {
     state.run.jobs = [...(state.run.jobs || []).filter((item) => item.id !== job.id), job];
     state.run.stages = { ...(state.run.stages || {}), [layer]: { ...(state.run.stages?.[layer] || {}), status: job.status || "queued" } };
     renderJobs(); renderNavigation(); renderStage(); renderL1Progress(job);
-    notify(`${layer.replace("_", " ")} 正在运行…`, "info");
+    notify(`${layerDisplay(layer).replace("_", " ")} 正在运行…`, "info");
     while (["queued", "running", "pending"].includes(job.status)) {
       await new Promise((resolve) => setTimeout(resolve, 850));
       const response = await api(runPath(`/jobs/${encodeURIComponent(job.id)}?compact=1`)); job = response.job || response;
@@ -1473,9 +1493,9 @@ async function executeJob(layer, extra = {}, manageBusy = true) {
       syncJobStage(job); if ($("records-drawer").open) renderJobs();
     }
     await refreshRun(true);
-    if (job.status === "partial") { const summary=job.result?.summary; notify(`${layer.replace("_", " ")} 部分完成${summary ? `：${summary.channels_succeeded} 通道完成，${summary.channels_failed} 通道计算失败` : ""}。可用结果已保存。`, "warning"); return job; }
-    if (normalizedStatus(job.status) !== "succeeded") throw new Error(`${layer.replace("_", " ")} 失败：${jobErrorText(job.error || job.message)}`);
-    notify(`${layer.replace("_", " ")} 已完成。`, "success");
+    if (job.status === "partial") { const summary=job.result?.summary; notify(`${layerDisplay(layer).replace("_", " ")} 部分完成${summary ? `：${summary.channels_succeeded} 通道完成，${summary.channels_failed} 通道计算失败` : ""}。可用结果已保存。`, "warning"); return job; }
+    if (normalizedStatus(job.status) !== "succeeded") throw new Error(`${layerDisplay(layer).replace("_", " ")} 失败：${jobErrorText(job.error || job.message)}`);
+    notify(`${layerDisplay(layer).replace("_", " ")} 已完成。`, "success");
     return job;
   } finally { if (manageBusy) setBusy(false); }
 }
@@ -1552,7 +1572,7 @@ function configureLayerPanels() {
   if(raw) $("peak-diagnostics").hidden = true;
   document.querySelector(".spectrum-legend").hidden = raw || review;
   $("refit-tb").hidden = raw;
-  $("refit-tb").textContent = ec ? "计算 EC L3" : l1 ? "计算 TB L2" : "重新拟合 TB";
+  $("refit-tb").textContent = ec ? `计算 ${layerDisplay("EC_L3")}` : l1 ? "计算 TB L2" : "重新拟合 TB";
   $("fitting-help").textContent = "";
   $("analysis-tab-residual").firstChild.textContent = raw ? "数据与元信息 " : "拟合残差 ";
   $("analysis-tab-comparison").textContent = raw ? "输入与依赖" : ec ? "刻度参数" : "参数比较";
@@ -1748,7 +1768,10 @@ async function selectEcPoint(point) {
   displayWindowValue("window-lo", override?.lo ?? spectrum.lo ?? fit.lo ?? point.lo ?? ""); displayWindowValue("window-hi", override?.hi ?? spectrum.hi ?? fit.hi ?? point.hi ?? "");
   $("window-status").textContent = (state.run.pending_ec_windows || []).includes(point.id) || point.pending_window ? "待重拟合" : spectrum.fit ? "" : "未拟合";
   const holder = clear($("spectrum-params"));
-  if (!raw) for (const [label, value] of [["峰位 / ADC", `${number(fit.center, 3)} ± ${number(fit.center_err, 3)}`], ["σ / ADC", number(fit.sigma, 3)], ["R²", number(fit.rsquared, 5)], ["拟合模型", fit.fit_mode || "—"]]) { const item = node("div", "param-item"); item.append(node("span", "", label), node("strong", "", value)); holder.append(item); }
+  if (!raw) for (const [label, value] of [["峰位 / ADC", `${number(fit.center, 3)} ± ${number(fit.center_err, 3)}`], ["σ / ADC", number(fit.sigma, 3)], [nativeContract() ? "约化 χ²" : "R²", number(nativeContract() ? (fit.redchi ?? fit.chi2_reduced ?? fit.fit_quality?.redchi) : fit.rsquared, 5)], ["拟合模型", fit.fit_mode || "—"]]) { const item = node("div", "param-item"); item.append(node("span", "", label), node("strong", "", value)); holder.append(item); }
+  if (!raw && nativeContract()) for (const [label,value] of [["主谱曝光 / s",fit.primary_exposure_s],["本底曝光 / s",fit.background_exposure_s]]) {
+    const item=node("div","param-item"); item.append(node("span","",label),node("strong","",number(value,3))); holder.append(item);
+  }
   if (!raw && spectrum.curve?.note) { const item = node("div", "param-item wide"); item.append(node("span", "", "历史曲线说明"), node("strong", "", "历史记录缺少背景参数，图中仅显示高斯峰分量；重拟合后保存完整曲线。")); holder.append(item); }
   if (!raw && point.quality_reasons?.length) { const item = node("div", "param-item wide"); item.append(node("span", "", "拟合问题提示"), node("strong", "", point.quality_reasons.join(" · "))); holder.append(item); }
   renderSpectrumProvenance(spectrum); renderEcSourceConfig();
@@ -1860,7 +1883,7 @@ async function loadTbVersions() {
   $("tb-binding-state").textContent = "";
   $("apply-tb-version").disabled = state.busy || !select.value;
 }
-async function applyTbVersion() { if (state.dirty) await saveRevision({}, true); const id = $("tb-version-select").value; if (!id) throw new Error("请先选择 TB L2 参数包。"); state.run = await api(runPath("/dependency"), { method: "PATCH", body: { tb_version_id: id } }); state.run = state.run.run || state.run; renderRun(); await loadSurfaceSafely(); notify("已应用 TB 参数，运行 EC L1 更新校正谱。", "success"); }
+async function applyTbVersion() { if (state.dirty) await saveRevision({}, true); const id = $("tb-version-select").value; if (!id) throw new Error("请先选择 TB L2 参数包。"); state.run = await api(runPath("/dependency"), { method: "PATCH", body: { tb_version_id: id } }); state.run = state.run.run || state.run; renderRun(); await loadSurfaceSafely(); notify(`已应用 TB 参数，运行 ${layerDisplay("EC_L1").replace("_", " ")} 更新校正谱。`, "success"); }
 
 function pipelinePlan(mode, tbStem, ecStem) {
   if (mode === "all") return layers.map(layer => ({layer:layer.id,representative:false}));
@@ -1870,7 +1893,8 @@ function pipelinePlan(mode, tbStem, ecStem) {
   }
   if (!ecStem) throw new Error("请选择 EC 文件。");
   const rows = state.run.inventory?.raw?.reading_preview?.rows || [], signal = rows.find(row => row.stem === ecStem);
-  const backgrounds = signal?.kind === "source" ? rows.filter(row => row.kind === "background").map(row=>row.stem) : [];
+  const backgrounds = signal?.kind === "source" ? rows.filter(row => row.kind === "background").map(row=>row.stem)
+    : nativeContract() && signal?.kind === "xray" ? rows.filter(row=>row.kind === "xray" && Number(row.energy_keV) === Number(signal.energy_keV) && Number(row.channel) === (Number(signal.channel)+1)%4).map(row=>row.stem) : [];
   return [...new Set([...backgrounds,ecStem])].flatMap(stem=>["EC_L0","EC_L1"].map(layer=>({layer,stem,representative:false}))).concat({layer:"EC_L2",stem:ecStem,representative:false});
 }
 function ensurePipelineDialog() {
@@ -1878,7 +1902,7 @@ function ensurePipelineDialog() {
   const dialog = node("dialog","workflow-dialog"); dialog.id="pipeline-dialog";
   const heading=node("div","dialog-title"); heading.append(node("h2","","运行流程")); const close=node("button","icon-button","×"); close.setAttribute("aria-label","关闭运行流程"); close.addEventListener("click",()=>dialog.close()); heading.append(close); dialog.append(heading);
   const modeLabel=node("label","field-label","处理范围"), mode=node("select","full-width"); mode.id="pipeline-mode"; mode.setAttribute("aria-label","流程范围");
-  for (const [value,label] of [["tb","TB 当前文件 · L0 → L1"],["ec","EC 当前文件 · L0 → L2"],["all","全部数据 · TB / EC 七层"]]) mode.append(new Option(label,value));
+  for (const [value,label] of [["tb","TB 当前文件 · L0 → L1"],["ec","EC 当前文件 · L0 → L2"],["all","全部数据 · TB / EC 全流程"]]) mode.append(new Option(label,value));
   modeLabel.append(mode); dialog.append(modeLabel);
   for (const [family,label] of [["tb","TB 文件"],["ec","EC 文件"]]) { const field=node("label","field-label",label); field.id=`pipeline-${family}-field`; const input=node("select","full-width"); input.id=`pipeline-${family}-file`; input.setAttribute("aria-label",label); field.append(input); dialog.append(field); input.addEventListener("change",renderPipelinePlan); }
   const preview=node("ol","workflow-plan"); preview.id="pipeline-plan"; dialog.append(preview);
@@ -1893,15 +1917,16 @@ function renderPipelinePlan() {
   try {
     const plan=pipelinePlan(mode,$("pipeline-tb-file").value,$("pipeline-ec-file").value);
     const unavailable = plan.find(step=>state.run.stages?.[step.layer]?.unavailable_reason); if (unavailable) throw new Error(state.run.stages[unavailable.layer].unavailable_reason);
-    for (const step of plan) preview.append(node("li","",`${step.layer.replace("_"," ")} · ${step.stem || "全部输入"}`));
+    for (const step of plan) preview.append(node("li","",`${layerDisplay(step.layer)} · ${step.stem || "全部输入"}`));
     if (mode==="all") preview.append(node("li","workflow-note","EC 将采用本次生成的 TB 曲面参数。"));
-    else if (mode==="ec") preview.append(node("li","workflow-note",`TB 参数：${state.run.selected_tb?.filename || "请先在 EC L1 选择 TB 参数"}`));
+    else if (mode==="ec") preview.append(node("li","workflow-note",`TB 参数：${state.run.selected_tb?.filename || `请先在 ${layerDisplay("EC_L1")} 选择 TB 参数`}`));
     $("start-pipeline").disabled=mode==="ec" && !state.run.selected_tb;
   } catch (e) { error.textContent=e.message; error.hidden=false; $("start-pipeline").disabled=true; }
 }
 function openPipelineDialog() {
   document.querySelector(".pipeline-menu").open=false;
   ensurePipelineDialog(); const family=state.layer.slice(0,2), raw=state.run.inventory?.raw || {}, rows=raw.reading_preview?.rows || [];
+  $("pipeline-mode").querySelector('option[value="ec"]').textContent = nativeContract() ? "EC 当前文件 · L0 → corr → L1" : "EC 当前文件 · L0 → L2";
   $("pipeline-mode").value=family==="TB" ? "tb" : "ec";
   for (const type of ["tb","ec"]) {
     const select=clear($("pipeline-"+type+"-file"));
@@ -1935,7 +1960,7 @@ async function runPipeline(plan, mode) {
         for (const point of points) { await selectEcPoint(point); await executeJob(step.layer,{point_id:point.id,stem:step.stem,channel,representative:false,...ecBinningSpec()},false); }
         const current=(state.ecOverview?.points || []).filter(point=>(point.channel==null || point.channel===channel) && ecPointMatchesObservation(point,step.stem));
         if (current.length) await selectEcPoint(current.find(point=>point.id===selectedPointId) || current[0]);
-      } else { const {layer,...spec}=step; const job = await executeJob(layer,{...spec,...(mode!=="all"?{channel,...(layer==="TB_L1"?{fit_channels:[channel]}:{})}:{})},false); if (job?.status === "partial") { notify(`${layer.replace("_"," ")} 有通道计算失败，可用结果已保存；请处理缺失结果后继续。`,"warning"); return; } }
+      } else { const {layer,...spec}=step; const job = await executeJob(layer,{...spec,...(mode!=="all"?{channel,...(layer==="TB_L1"?{fit_channels:[channel]}:{})}:{})},false); if (job?.status === "partial") { notify(`${layerDisplay(layer).replace("_"," ")} 有通道计算失败，可用结果已保存；请处理缺失结果后继续。`,"warning"); return; } }
     }
     notify("流程已完成。","success");
   } finally { setBusy(false); }
@@ -1953,7 +1978,7 @@ function acquisitionStatus(text, error = false) { $("acquisition-status").textCo
 function acquisitionError(error) { acquisitionStatus(error.message || String(error), true); }
 function acquisitionMarkChanged() { if (!acquisitionDraft.profile) return; acquisitionDraft.changed = true; acquisitionDraft.previewValid = false; $("save-acquisition").disabled = true; acquisitionStatus("配置已修改，预览后保存。"); registryRefreshButtons(); }
 function acquisitionSetBusy(busy) { acquisitionDraft.busy = busy; for (const id of ["preview-acquisition", "load-acquisition-preset", "load-event-xml", "load-hk-xml", "use-event-xml-preset", "use-hk-xml-preset", "choose-event-xml-file", "choose-hk-xml-file"]) $(id).disabled = busy || (id === "preview-acquisition" && !acquisitionDraft.profile); $("save-acquisition").disabled = busy || !acquisitionDraft.previewValid; $("acquisition-dialog").setAttribute("aria-busy", String(busy)); registryRefreshButtons(); }
-function acquisitionShowTab(tab) { if (tab === "metadata") acquisitionEnsureMetadata(); for (const name of ["xml", "metadata", "preview"]) { const active = tab === name; $("acquisition-tab-" + name).classList.toggle("active", active); $("acquisition-tab-" + name).setAttribute("aria-selected", String(active)); $("acquisition-panel-" + name).hidden = !active; } $("acquisition-dialog").querySelector(".acquisition-scroll").scrollTop = 0; }
+function acquisitionShowTab(tab) { if (tab === "metadata") acquisitionEnsureMetadata(); for (const name of ["xml", "metadata", "analysis", "preview"]) { const active = tab === name; $("acquisition-tab-" + name).classList.toggle("active", active); $("acquisition-tab-" + name).setAttribute("aria-selected", String(active)); $("acquisition-panel-" + name).hidden = !active; } $("acquisition-dialog").querySelector(".acquisition-scroll").scrollTop = 0; }
 function acquisitionNumber(id, nullable = false) { const raw = $(id).value.trim(); if (raw === "" && nullable) return null; const n = Number(raw); if (raw === "" || !Number.isFinite(n)) throw new Error(`请填写有效数值：${$(id).closest("label")?.firstChild?.textContent || id}`); return n; }
 function acquisitionFormField(holder, key, label, value, numeric = false) { const field = node("label", "", label), input = node("input"); input.id = "profile-" + key; input.type = numeric ? "number" : "text"; if (numeric) input.step = "any"; input.value = Array.isArray(value) ? value.join(", ") : value ?? ""; field.append(input); holder.append(field); }
 function acquisitionRemoveButton(row, label) { const cell = node("td"), button = node("button", "profile-remove-row", "×"); button.type = "button"; button.setAttribute("aria-label", label); button.addEventListener("click", () => { row.remove(); acquisitionMarkChanged(); }); cell.append(button); row.append(cell); }
@@ -1987,6 +2012,8 @@ function acquisitionUpdateModes() {
   $("profile-transform-equations").textContent = `${tempMode === "grid10_signed" ? "温度：t = raw / 256；t > 128 时减去 255。" : "温度：raw × 比例 + 偏移。"} ${biasMode === "grid10_current_drop" ? "偏压：20.57 × 2.5 × Vraw / 4096 − 499 × 2.5 × Iraw / (4096 × 548.88)。" : biasMode === "grid11_current_drop" ? "偏压：Vraw / 1000 − 499 × Iraw × 10⁻⁶。" : "偏压：raw × 比例 + 偏移。"} 多包参数留空时使用解析器默认值。`;
 }
 function acquisitionRenderProfile(profile) {
+  for (const key of ["tb_l1","tb_l2","ec_l1","ec_l2"]) $("contract-"+key).value = JSON.stringify(profile.analysis_config?.[key] || {}, null, 2);
+  $("contract-source-payload").value = profile.source_mapping?.source_payload || state.run?.payload || "14B";
   acquisitionDraft.profile = acquisitionCopy(profile); const parser = profile.parser || {}, conditions = parser.conditions || {}, xml = profile.xml || {}, discovery = profile.discovery || {};
   for (const role of ["event", "hk"]) { $(role + "-xml-path").value = xml[role]?.source_path || ""; $(role + "-xml-text").value = xml[role]?.text || ""; $(role + "-xml-status").textContent = xml[role]?.imported_name ? `浏览器导入 · ${xml[role].imported_name}` : xml[role]?.text ? "已载入 XML 快照" : "未载入"; const select = clear($(role + "-xml-preset")); for (const preset of acquisitionDraft.presets) select.append(new Option(preset.label || preset.id, preset.id)); if (!select.options.length) select.append(new Option("无内置 XML 预设", "")); }
   $("profile-event-tag").value = parser.event_tag || ""; $("profile-hk-tag").value = parser.hk_tag || ""; $("profile-endian").value = parser.endian || "MSB";
@@ -2021,6 +2048,10 @@ function acquisitionReadProfile() {
   profile.discovery.manifest = [...$("profile-manifest-rows").rows].map((row) => { const item = { ...row._profileOriginal }; for (const input of row.querySelectorAll("[data-key]")) { const raw = input.value.trim(), key = input.dataset.key; if (!raw) { delete item[key]; continue; } if (["channel", "energy_keV", "exposure_minutes", "temp", "bias"].includes(key)) { if (!Number.isFinite(Number(raw))) throw new Error(`文件映射 ${key} 需要有效数值。`); item[key] = Number(raw); } else if (key === "peak_energies_keV") item[key] = raw.split(",").map((value) => { const n = Number(value.trim()); if (!(n > 0)) throw new Error("映射表的源能线须为正数，使用逗号分隔。"); return n; }); else item[key] = raw; } return item; });
   profile.discovery.rules = [...$("profile-rule-rows").rows].map((row) => { const item = { ...row._profileOriginal }; for (const input of row.querySelectorAll("[data-key]")) { const key = input.dataset.key, value = input.value.trim(); if (key === "metadata") { if (value) { try { item.metadata = JSON.parse(value); } catch { throw new Error("文件规则常量须为 JSON 对象，例如 {\"exposure_minutes\":60}"); } if (!item.metadata || Array.isArray(item.metadata) || typeof item.metadata !== "object") throw new Error("文件规则常量须为 JSON 对象"); } else delete item.metadata; } else item[key] = value || (key === "metadata_regex" ? null : ""); } return item; });
   profile.discovery.sources = [...$("profile-source-rows").rows].map((row) => { const item = { ...row._profileOriginal }; for (const input of row.querySelectorAll("[data-key]")) { const key = input.dataset.key, raw = input.value.trim(); item[key] = key === "aliases" ? raw.split(",").map((s) => s.trim()).filter(Boolean) : key === "energies_keV" ? raw.split(",").map((s) => s.trim()).filter(Boolean).map((s) => { const value = Number(s); if (!(value > 0)) throw new Error("源能线应填写正数，使用逗号分隔。"); return value; }) : raw; } return item; });
+  }
+  if (profile.analysis_contract === "cali_proc@0.5") {
+    profile.analysis_config_text = {};
+    for (const key of ["tb_l1","tb_l2","ec_l1","ec_l2"]) profile.analysis_config_text[key] = $("contract-"+key).value || "{}";
   }
   return profile;
 }
@@ -2100,7 +2131,18 @@ for (const id of ["close-acquisition", "cancel-acquisition"]) $(id).addEventList
 $("acquisition-dialog").addEventListener("cancel", (event) => { if (acquisitionDraft.busy) event.preventDefault(); });
 $("acquisition-dialog").addEventListener("input", (event) => { if (event.target.type !== "file" && event.target.id !== "acquisition-reason" && event.target.id !== "profile-manifest-import") acquisitionMarkChanged(); });
 $("acquisition-dialog").addEventListener("change", (event) => { if (["profile-condition-mode", "profile-discovery-mode", "profile-temp-mode", "profile-bias-mode", "profile-hk-selection"].includes(event.target.id)) acquisitionUpdateModes(); if (event.target.type !== "file" && event.target.id !== "acquisition-reason") acquisitionMarkChanged(); });
-for (const tab of ["xml", "metadata", "preview"]) { const button = $("acquisition-tab-" + tab); button.addEventListener("click", () => acquisitionShowTab(tab)); button.addEventListener("keydown", (event) => { if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return; event.preventDefault(); const tabs = ["xml", "metadata", "preview"], index = event.key === "Home" ? 0 : event.key === "End" ? 2 : (tabs.indexOf(tab) + (event.key === "ArrowLeft" ? 2 : 1)) % 3; acquisitionShowTab(tabs[index]); $("acquisition-tab-" + tabs[index]).focus(); }); }
+for (const tab of ["xml", "metadata", "analysis", "preview"]) {
+  const button = $("acquisition-tab-" + tab);
+  button.addEventListener("click", () => acquisitionShowTab(tab));
+  button.addEventListener("keydown", (event) => {
+    if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+    event.preventDefault();
+    const tabs = ["xml", "metadata", "analysis", "preview"];
+    const index = event.key === "Home" ? 0 : event.key === "End" ? tabs.length - 1
+      : (tabs.indexOf(tab) + (event.key === "ArrowLeft" ? tabs.length - 1 : 1)) % tabs.length;
+    acquisitionShowTab(tabs[index]); $("acquisition-tab-" + tabs[index]).focus();
+  });
+}
 for (const role of ["event", "hk"]) { $("load-" + role + "-xml").addEventListener("click", () => acquisitionLoadXml(role).catch(acquisitionError)); $("use-" + role + "-xml-preset").addEventListener("click", () => acquisitionLoadXml(role, true).catch(acquisitionError)); $("choose-" + role + "-xml-file").addEventListener("click", () => $(role + "-xml-file").click()); $(role + "-xml-file").addEventListener("change", () => acquisitionImportXmlFile(role).catch(acquisitionError)); }
 $("load-acquisition-preset").addEventListener("click", () => acquisitionLoadPreset().catch(acquisitionError));
 $("preview-acquisition").addEventListener("click", () => acquisitionPreview().catch(acquisitionError)); $("save-acquisition").addEventListener("click", () => acquisitionSave().catch(acquisitionError));
@@ -2180,3 +2222,13 @@ window.addEventListener("resize", () => { clearTimeout(resizeTimer); resizeTimer
 $("records-drawer")?.addEventListener("toggle", () => requestAnimationFrame(resizeCharts));
 window.addEventListener("beforeunload", (event) => { if (state.dirty) { event.preventDefault(); event.returnValue = ""; } });
 bootstrap().catch((error) => { $("connection-label").textContent = state.bootstrap ? "服务已连接 · 试算恢复失败" : "本地服务连接失败"; messageError(error); });
+
+$("load-contract-profile").addEventListener("click", handleError(async () => {
+  if (!state.run?.dataset?.raw_dir) throw new Error("请先选择原始数据目录。");
+  acquisitionSetBusy(true);
+  try {
+    const result = await api("/api/contracts/profile", {method:"POST",body:{payload:state.run.payload,source_payload:$("contract-source-payload").value,raw_dir:state.run.dataset.raw_dir}});
+    acquisitionRenderProfile(result.profile); acquisitionMarkChanged(); acquisitionShowTab("analysis");
+  } finally { acquisitionSetBusy(false); }
+}));
+for (const key of ["tb_l1","tb_l2","ec_l1","ec_l2"]) $("contract-"+key).addEventListener("input", acquisitionMarkChanged);

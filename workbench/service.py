@@ -31,6 +31,8 @@ from .ec_peaks import draft_points, normalize_peak_sets
 from .presets import PresetRegistry
 
 LAYERS = ("TB_L0", "TB_L1", "TB_L2", "EC_L0", "EC_L1", "EC_L2", "EC_L3")
+CONTRACT_LAYERS = {"TB_L0": "TB_L0", "TB_L1": "TB_L1", "TB_L2": "TB_L2",
+                   "EC_L0": "EC_L0", "EC_corr": "EC_L1", "EC_L1": "EC_L2", "EC_L2": "EC_L3"}
 DEPENDENCIES = {
     "TB_L0": [],
     "TB_L1": ["TB_L0"],
@@ -449,7 +451,7 @@ class Workbench:
             write(root / revision_path, revision)
             self._saved_operation(state, "保存读取配置", [revision_path,
                 Path(reference["path"]).relative_to(root).as_posix(),
-                *(Path(item["path"]).relative_to(root).as_posix() for item in reference["xml"])])
+                *(Path(item["path"]).relative_to(root).as_posix() for item in [*reference["xml"], *reference.get("analysis_files", [])])])
             self.save(state)
         return self.view(run_id)
 
@@ -472,7 +474,7 @@ class Workbench:
         paths = [revision_path]
         if reference:
             paths.extend([Path(reference["path"]).relative_to(root).as_posix(),
-                          *(Path(item["path"]).relative_to(root).as_posix() for item in reference["xml"])])
+                          *(Path(item["path"]).relative_to(root).as_posix() for item in [*reference["xml"], *reference.get("analysis_files", [])])])
         self._saved_operation(state, "切换读取预设", paths)
         self.save(state)
 
@@ -745,7 +747,18 @@ class Workbench:
                         "bytes": src.stat().st_size,
                     }
                 )
+        if dataset and dataset.get("product_dir") and list(Path(dataset["product_dir"]).glob("tb/L1/*/points.json")):
+            from ..common.contract_import import import_contract_products
+            imported_index = import_contract_products(Path(dataset["product_dir"]), root / "products", payload,
+                                                     source_payload=dataset.get("source_payload"))
+            for filename in imported_index["outputs"]:
+                source = Path(filename)
+                target = root / "baseline" / source.relative_to(root / "products")
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(source, target)
+            write(root / "contract-import.json", imported_index)
         tb_files = sorted((root / "baseline" / payload / "tb/L2/json").glob("*_TB*.json"))
+        tb_files += sorted(adapter.historical_layer(payload, "TB_L2").glob("*/*_temp_bias_fit.json"))
         tb = None
         import_warnings = []
         for candidate in reversed(tb_files):
@@ -956,6 +969,8 @@ class Workbench:
             .historical_layer(state["payload"], "TB_L2")
             .glob("json/*_TB*.json")
         ]
+        candidates.extend((path, "historical") for path in self.adapter_for(state)
+                          .historical_layer(state["payload"], "TB_L2").glob("*/*_temp_bias_fit.json"))
         # Completed attempts are temporal versions, including attempts from other saved runs of this dataset.
         for state_path in self.runs.glob("*/state.json"):
             other = json.loads(state_path.read_text(encoding="utf-8"))
@@ -1115,6 +1130,12 @@ class Workbench:
     def submit(self, run_id, spec):
         with self.lock:
             state = self.read(run_id)
+            if "contract_layer" in spec:
+                if self.view(run_id).get("analysis_contract") != "cali_proc@0.5":
+                    raise ValueError("此试算尚未采用新规范")
+                if spec["contract_layer"] not in CONTRACT_LAYERS:
+                    raise ValueError("未知规范处理层")
+                spec = {**spec, "layer": CONTRACT_LAYERS[spec["contract_layer"]]}
             layer = spec.get("layer")
             if layer not in LAYERS:
                 raise ValueError("未知处理层")
@@ -1419,11 +1440,18 @@ class Workbench:
                     target = output / src.relative_to(root / "products")
                     target.parent.mkdir(parents=True, exist_ok=True)
                     shutil.copy2(src, target)
-            target_dir = layer_dir(output, state["payload"], job["layer"])
-            before = {str(p): (digest(p), p.stat().st_mtime_ns) for p in target_dir.rglob("*") if p.is_file()}
+            job_adapter = self.adapter_for({**state, "acquisition": job.get("acquisition")})
+            native = (getattr(job_adapter, "acquisition", None) or {}).get("analysis_contract") == "cali_proc@0.5"
+            if native and job["layer"] in ("TB_L1", "EC_L2"):
+                family = "tb" if job["layer"] == "TB_L1" else "ec"
+                for node in (root / "products" / state["payload"] / family / "L1").glob("*"):
+                    if node.is_dir() and (node / "points.json").is_file():
+                        shutil.copytree(node, output / node.relative_to(root / "products"), dirs_exist_ok=True)
+            target_dir = output / state["payload"] if native else layer_dir(output, state["payload"], job["layer"])
+            before = {str(p): (p.stat().st_size, p.stat().st_mtime_ns) for p in target_dir.rglob("*") if p.is_file()}
             with (job_root / "processor.log").open("w", encoding="utf-8") as log:
                 with contextlib.redirect_stdout(log), contextlib.redirect_stderr(log):
-                    result = self.adapter_for({**state, "acquisition": job.get("acquisition")}).execute(
+                    result = job_adapter.execute(
                         state["payload"],
                         job["layer"],
                         output,
@@ -1439,13 +1467,13 @@ class Workbench:
             changed = [
                 p
                 for p in target_dir.rglob("*")
-                if p.is_file() and before.get(str(p)) != (digest(p), p.stat().st_mtime_ns)
+                if p.is_file() and before.get(str(p)) != (p.stat().st_size, p.stat().st_mtime_ns)
             ]
             if not result.get("success", False) and not result.get("partial", False):
                 raise RuntimeError(json.dumps(clean(result.get("errors") or result), ensure_ascii=False))
             if not changed:
                 raise RuntimeError("处理器没有生成本次新产物；历史文件不能作为成功依据")
-            validation = self.validate(job["layer"], changed)
+            validation = self.validate(job["layer"], changed, contract=True) if native else self.validate(job["layer"], changed)
             job["validation"] = validation
             write(job_root / "validation.json", validation)
             generated = []
@@ -1505,7 +1533,7 @@ class Workbench:
                         ready = set()
                         for item in job.get("result", {}).get("processor", {}).get("outputs", []):
                             energy = item["energy"]
-                            records = json.loads((target_dir / "json" / item["json"]).read_text(encoding="utf-8"))
+                            records = json.loads((layer_dir(output, state["payload"], job["layer"]) / "json" / item["json"]).read_text(encoding="utf-8"))
                             expected_points = self._expected_ec_points(state, energy, records)
                             prior = set(point_coverage.get(energy, expected_points if energy in completed else []))
                             prior.update(item.get("points_updated", expected_points))
@@ -1699,8 +1727,33 @@ class Workbench:
                 job["log"] = tail.replace("\r\n", "\n").replace("\r", "\n")[-12000:]
         return self._compact_job(job) if compact else job
 
-    def validate(self, layer, paths):
+    def validate(self, layer, paths, *, contract=False):
         """Use the workspace's authoritative checkers read-only, separately from computation."""
+        if contract:
+            from ..common.cali_contract import validate_l1
+            rows = []
+            for path in paths:
+                if path.name not in ("meta.json",) and not path.name.endswith(".meta.json"):
+                    continue
+                meta = json.loads(path.read_text(encoding="utf-8"))
+                if not isinstance(meta, dict) or not meta.get("schema"):
+                    continue
+                schema = meta["schema"]
+                if "-l1@" in schema:
+                    result = validate_l1(path.parent)
+                    rows.append({"file": str(path), **result})
+                elif "-l2@" in schema:
+                    hashes = meta.get("model_sha256")
+                    if isinstance(hashes, str):
+                        valid = digest(path.with_name(path.name.replace(".meta.json", ".json"))) == hashes
+                    else:
+                        valid = bool(hashes) and all(digest(path.parent / name) == sha for name, sha in (hashes or {}).items())
+                    rows.append({"file": str(path), "valid": valid})
+                elif "-l0@" in schema or schema.startswith("exp-engineering"):
+                    rows.append({"file": str(path), "valid": (path.parent / "events.parquet").is_file()})
+            return {"status": "passed" if rows and all(r["valid"] for r in rows) else "failed",
+                    "checker": "cali_proc@0.5", "files": rows,
+                    "passed": sum(r["valid"] for r in rows), "total": len(rows)}
         checker = self.workspace / "cali_format" / "src" / "check" / f"{layer}.py"
         if not checker.exists():
             return {"status": "unavailable", "reason": "未找到 cali_format 检查器", "files": []}
@@ -2027,6 +2080,10 @@ class Workbench:
                         }
                     )
         state.update(
+            analysis_contract=(adapter.acquisition or {}).get("analysis_contract"),
+            contract_stages={name: {**stages[internal], "processor_operation": internal}
+                             for name, internal in CONTRACT_LAYERS.items()}
+            if (adapter.acquisition or {}).get("analysis_contract") == "cali_proc@0.5" else None,
             stages=stages,
             artifacts=artifacts,
             dependency_stale=self.stale(state),
@@ -2046,6 +2103,12 @@ class Workbench:
                 "代表样例只重算所示工况/能量；其余点来自明确导入的历史 JSON，EC L3 可能混合历史能峰。",
             ],
         )
+        if (adapter.acquisition or {}).get("analysis_contract") == "cali_proc@0.5":
+            state["scientific_notes"] = [
+                *state.get("import_warnings", []),
+                "EC L2 按 ADC 误差进行固定能量锚的分段 ODR：E=f(ADC)；分辨率保存为比例。",
+                "TB 与 EC 的谱密度分别为 Counts/ADC 和 Counts/(s·ADC)，曝光依据原生 timestamp1。",
+            ]
         if compact:
             state["jobs"] = [self._compact_job(job) for job in state["jobs"]]
             state["revisions"] = [{key: value for key, value in revision.items() if key != "config"}

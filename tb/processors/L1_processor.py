@@ -16,6 +16,7 @@ import numpy as np
 from lmfit.models import ExponentialModel, GaussianModel, LinearModel, QuadraticModel
 from scipy.signal import savgol_filter
 
+from ...common.cali_contract import CONTRACT, figure_bytes, gehrels_error, publish_l1
 from ...common.peak_finding import (
     PeakDetectionError,
     detect_photopeak_for_fit,
@@ -72,15 +73,23 @@ class FitResult:
     peak_detection: dict[str, Any]
     fit_quality: dict[str, Any]
     histogram_config: dict[str, float]
+    center_sigma_covariance: float = 0.0
+    height_std: float = 0.0
+    redchi: float = 0.0
+    ndf: int = 0
+    ordinate: str = "counts/bin"
 
 
 class TBL1Processor:
     """TB L1层处理器 - 兼容旧流程拟合与绘图。"""
 
-    def __init__(self, payload_name: str, product_root: Path, *, response_payload: str | None = None):
+    def __init__(self, payload_name: str, product_root: Path, *, response_payload: str | None = None,
+                 analysis_contract: str | None = None):
         self.payload_name = payload_name
         self.response_payload = response_payload or payload_name
         self.layout = DataLayout(product_root, payload_name)
+        self._native_fit = analysis_contract == CONTRACT
+        self._active_bin_width = 1.0
 
     def process(
         self,
@@ -173,6 +182,8 @@ class TBL1Processor:
             stem = parquet_file.stem.removesuffix(".l0")
             fig = None
             updated = []
+            fits = {}
+            unconfirmed = []
             failures = []
             try:
                 # Spectral fitting needs amplitude, channel and CRC only. Read
@@ -180,13 +191,42 @@ class TBL1Processor:
                 import pyarrow.parquet as pq
 
                 parquet = pq.ParquetFile(parquet_file)
-                columns = [name for name in ("channel", "amp", "crc_check")
+                columns = [name for name in ("channel", "amp", "crc_check", "timestamp1")
                            if name in parquet.schema_arrow.names]
                 df, input_quality = validated_events(parquet.read(columns=columns).to_pandas())
                 metadata = parquet.schema_arrow.metadata or {}
                 meta = json.loads(metadata.get(b"hk_data", b"{}"))
                 acquisition = json.loads(metadata.get(b"acquisition", b"{}"))
+                native = json.loads(metadata.get(b"native", b"{}"))
+                self._native_fit = (cfg.get("analysis_contract") == CONTRACT or
+                                    acquisition.get("analysis_contract") == CONTRACT or
+                                    native.get("analysis_contract") == CONTRACT)
+                native_selection = None
+                if self._native_fit:
+                    from ...common.legacy_parser import to_hk_data
+                    from ...common.native_time import apply_conditions, event_span
+
+                    bundle = cfg.get("payload_contract_config", {})
+                    native_config = bundle.get("tb_l1", {})
+                    shared = native_config.get("shared", {})
+                    measurement = native_config.get("measurements", {}).get(stem, {})
+                    observation = acquisition.get("observation", {})
+                    target_bias = cfg.get("target_bias_V", measurement.get("target_bias_V", observation.get("bias")))
+                    if target_bias is None:
+                        raise ValueError("TB L1 needs an explicit target_bias_V for HK plateau selection")
+                    tolerance = shared.get("conditions", shared.get("stable", {})).get("tolerance_V", .3)
+                    df, native_selection = apply_conditions(df, native, float(target_bias), float(tolerance))
+                    meta = to_hk_data(native_selection["channels"])
+                    # The 15B reference uses the full SCI extrema; 14B uses
+                    # native first/last. Both retain clock-order diagnostics.
+                    extrema = shared.get("clock", {}).get("tb_global_extrema",
+                                                         native_config.get("payload", self.response_payload) == "15B")
+                    native_selection["exposure"] = event_span(df, require_ec=False, global_extrema=extrema)
+                    self._native_background = measurement.get("background", shared.get("background", "auto"))
+                    self._native_max_nfev = int(shared.get("fit", {}).get("max_nfev", 100000))
                 histogram = cfg.get("histogram_config") or acquisition.get("fitting", {}).get("tb_histogram")
+                if self._native_fit and not histogram:
+                    histogram = {"min": 0., "max": 16384., "bin_width": 4.}
                 windows = {} if cfg.get("automatic_window") else manual_windows
                 json_path = self.layout.get_tb_l1_json(f"{stem}_fit_results.l1.json")
                 existing = read_json(json_path) if json_path.exists() else []
@@ -201,6 +241,24 @@ class TBL1Processor:
                         amp_data = amplitudes[channels == ch]
                         if len(amp_data) < 10:
                             raise ValueError(f"Only {len(amp_data)} valid events; at least 10 are required")
+                        if (self._native_fit and not cfg.get("automatic_window") and stem in windows
+                                and str(ch) not in windows[stem]):
+                            records[ch] = {
+                                "channel": ch, "status": "unconfirmed", "reason": "no_confirmed_window",
+                                "center": None, "center_err": None, "sigma": None, "sigma_err": None,
+                                "window": None, "window_lo": None, "window_hi": None,
+                                "fit_performed": False, "n_events": len(amp_data),
+                                "temp": meta["temp"][ch], "temp_err": meta["temp_err"][ch],
+                                "bias": meta["bias"][ch], "bias_err": meta["bias_err"][ch],
+                                "analysis_contract": CONTRACT,
+                                "exposure_s": native_selection["exposure"]["span_s"],
+                                "exposure_basis": native_selection["exposure"]["basis"],
+                                "hk_samples": native_selection["channels"][str(ch)]["temp_n"],
+                                "selection": native_selection["selection"],
+                            }
+                            unconfirmed.append(ch)
+                            updated.append(ch)
+                            continue
                         settings = dict(cfg.get("peak_detection") or {})
                         guide = guides.get(stem, {}).get(str(ch)) if not self._is_manual_entry(windows.get(stem, {}).get(str(ch), {})) else None
                         if guide:
@@ -212,6 +270,12 @@ class TBL1Processor:
                         is_manual = self._is_manual_entry(windows.get(stem, {}).get(str(ch), {}))
                         record = self._fit_record(ch, fit_res, meta, is_manual, len(amp_data), input_quality)
                         record["acquisition_profile_sha256"] = acquisition.get("profile_sha256")
+                        if native_selection:
+                            record.update(analysis_contract=CONTRACT,
+                                          hk_samples=native_selection["channels"][str(ch)]["temp_n"],
+                                          exposure_s=native_selection["exposure"]["span_s"],
+                                          exposure_basis=native_selection["exposure"]["basis"],
+                                          selection=native_selection["selection"])
                         records[ch] = record
                         fits[ch] = fit_res
                         results["channels_accepted" if fit_res.fit_quality["accepted"] else "channels_rejected"] += 1
@@ -255,21 +319,68 @@ class TBL1Processor:
                     for ch, ax in axes.items():
                         if ch in fits:
                             self._plot_channel(ax, ch, fits[ch])
+                        elif ch in unconfirmed:
+                            width = histogram["bin_width"]
+                            counts, edges = np.histogram(amplitudes[channels == ch], bins=np.arange(
+                                histogram["min"], histogram["max"] + width, width))
+                            ax.step((edges[:-1] + edges[1:]) / 2, counts / width, where="mid")
+                            ax.set_title(f"CH{ch}: no confirmed window")
+                            ax.set_ylabel("Counts/ADC")
                         else:
                             label = (f"CH{ch}: Compton response, model pending" if unsupported_spectral_model(self.response_payload, ch)
                                      else f"CH{ch}: fit failed" if ch in selected_channels else f"CH{ch}: unchanged")
                             ax.text(0.5, 0.5, label,
                                     ha="center", va="center", transform=ax.transAxes)
-                    fig.suptitle(f"{stem} | Fit mode: auto-select", fontsize=14)
+                    label = (f"Background: {getattr(self, '_native_background', 'auto')}" if self._native_fit
+                             else "Fit mode: auto-select")
+                    fig.suptitle(f"{stem} | {label}", fontsize=14)
                     # Fixed padding avoids constrained-layout's repeated text
                     # measurement on every draw during an interactive refit.
                     fig.subplots_adjust(left=0.08, right=0.98, bottom=0.10, top=0.88, hspace=0.42, wspace=0.25)
                     fig_path = self.layout.get_tb_l1_figure(figure_name)
                     fig.savefig(fig_path, dpi=150, format="jpg")
+                    canonical = None
+                    if self._native_fit:
+                        import pandas as pd
+
+                        spectra = []
+                        for channel, fit in fits.items():
+                            width = fit.histogram_config["bin_width"]
+                            counts = fit.hist * width
+                            spectra.append(pd.DataFrame({
+                                "channel": channel, "x": fit.mids,
+                                "bin_left": fit.mids - width / 2, "bin_right": fit.mids + width / 2,
+                                "counts": counts, "err": gehrels_error(counts),
+                                "density": fit.hist, "density_err": gehrels_error(counts) / width,
+                            }))
+                        for channel in unconfirmed:
+                            width = histogram["bin_width"]
+                            counts, edges = np.histogram(amplitudes[channels == channel], bins=np.arange(
+                                histogram["min"], histogram["max"] + width, width))
+                            spectra.append(pd.DataFrame({
+                                "channel": channel, "x": (edges[:-1] + edges[1:]) / 2,
+                                "bin_left": edges[:-1], "bin_right": edges[1:],
+                                "counts": counts, "err": gehrels_error(counts),
+                                "density": counts / width, "density_err": gehrels_error(counts) / width,
+                            }))
+                        canonical = publish_l1(
+                            self.layout.product_root, self.payload_name, "tb", stem,
+                            [records[ch] for ch in updated], pd.concat(spectra, ignore_index=True),
+                            {"l0_source": native["l0_node"], "source": native.get("source"),
+                             "hk_source": native.get("hk_source"), "history": [native_selection],
+                             "conditions": native_selection, "time": native.get("time_axis"),
+                             "fit": {"histogram": histogram, "scale_covar": False,
+                                     "weights": "1/(Gehrels(counts)/bin_width)", "ordinate": "Counts/ADC"},
+                             "config": cfg, "internal_layer": "TB_L1"},
+                            fit_figure=figure_bytes(fig),
+                            selection_figures={"selection.png": self._selection_figure(native, native_selection)},
+                        )
                     results["outputs"].append({
-                        "stem": stem, "channels_fitted": sum(not row.get("placeholder", False) for row in records.values()), "channels_updated": updated,
+                        "stem": stem, "channels_fitted": sum(row.get("center") is not None and not row.get("placeholder", False) for row in records.values()), "channels_updated": updated,
+                        "channels_unconfirmed": unconfirmed,
                         "channels_failed": [failure["channel"] for failure in failures],
                         "json": json_path.name, "figure": fig_path.name, "input_quality": input_quality,
+                        "canonical": canonical,
                     })
                     results["n_processed"] += 1
             except Exception as exc:
@@ -280,7 +391,7 @@ class TBL1Processor:
             finally:
                 if fig is not None:
                     plt.close(fig)
-            results["channels_fitted"] += len(updated)
+            results["channels_fitted"] += len(fits)
             results["channels_failed"] += len(selected_channels) - len(updated)
             outcome = {"stem": stem, "channels_updated": updated,
                        "channels_failed": [failure["channel"] for failure in failures],
@@ -419,6 +530,11 @@ class TBL1Processor:
             sigma_term = (fit_res.fwhm / fit_res.center) * (fit_res.sigma_err / max(fit_res.sigma, 1e-12)) if fit_res.sigma > 0 else 0.0
             center_term = (fit_res.fwhm / fit_res.center**2) * fit_res.center_err
             resolution_err = float(np.sqrt(sigma_term**2 + center_term**2))
+            if self._native_fit:
+                resolution_variance = (sigma_term**2 + center_term**2
+                                       - 2 * resolution**2 * fit_res.center_sigma_covariance /
+                                       (fit_res.center * fit_res.sigma))
+                resolution_err = float(np.sqrt(max(resolution_variance, 0.)))
         else:
             resolution = float("nan")
             resolution_err = 0.0
@@ -450,6 +566,11 @@ class TBL1Processor:
             "histogram_config": fit_res.histogram_config,
             "input_quality": input_quality,
         }
+        if self._native_fit:
+            record.update(center_sigma_covariance=fit_res.center_sigma_covariance,
+                          height_std=fit_res.height_std, redchi=fit_res.redchi, ndf=fit_res.ndf,
+                          n_bins=len(fit_res.x_cut), ordinate="Counts/ADC",
+                          amplitude_kind="area", resolution_unit="fraction")
         if fit_res.slope is not None:
             record["slope"] = float(fit_res.slope)
         if fit_res.intercept is not None:
@@ -633,7 +754,9 @@ class TBL1Processor:
 
         cut_mask = (mids >= lo) & (mids <= hi)
         x_cut = mids[cut_mask]
-        y_cut = hist[cut_mask]
+        width = float(histogram["bin_width"])
+        self._active_bin_width = width
+        y_cut = hist[cut_mask] / width if self._native_fit else hist[cut_mask]
         if x_cut.size < 8 or np.max(y_cut) <= 0:
             raise RuntimeError("Invalid fit window")
 
@@ -642,7 +765,7 @@ class TBL1Processor:
         result, comps, fit_mode, rsquared = self._select_best_fit(
             x_cut, y_cut, peak_x, center_lo, center_hi, candidate.sigma,
         )
-        quality = fit_quality(result, x_cut, y_cut, np.sqrt(np.maximum(y_cut, 1.0)),
+        quality = fit_quality(result, x_cut, y_cut, self._fit_errors(y_cut),
                               selection_warnings=detection.get("selection_warnings"))
 
         center = float(result.params["g_center"].value)
@@ -674,11 +797,21 @@ class TBL1Processor:
         fwhm = 2.0 * np.sqrt(2.0 * np.log(2.0)) * sigma
         height = amplitude / (sigma * np.sqrt(2.0 * np.pi)) if sigma > 0 else float("nan")
         residual = y_cut - result.best_fit
+        covariance = 0.
+        height_std = 0.
+        if result.covar is not None and all(name in result.var_names for name in ("g_center", "g_sigma")):
+            ic, isig = result.var_names.index("g_center"), result.var_names.index("g_sigma")
+            covariance = float(result.covar[ic, isig])
+            if "g_amplitude" in result.var_names and sigma > 0:
+                gradient = np.zeros(len(result.var_names))
+                gradient[result.var_names.index("g_amplitude")] = 1 / (sigma * np.sqrt(2 * np.pi))
+                gradient[isig] = -height / sigma
+                height_std = float(np.sqrt(max(float(gradient @ result.covar @ gradient), 0.)))
 
         return FitResult(
-            hist=hist,
+            hist=hist / width if self._native_fit else hist,
             mids=mids,
-            hist_smooth=hist_smooth,
+            hist_smooth=hist_smooth / width if self._native_fit else hist_smooth,
             x_cut=x_cut,
             y_cut=y_cut,
             best_fit=result.best_fit,
@@ -707,7 +840,39 @@ class TBL1Processor:
             peak_detection=detection,
             fit_quality=quality,
             histogram_config=histogram,
+            center_sigma_covariance=covariance, height_std=height_std,
+            redchi=float(result.redchi), ndf=int(result.nfree),
+            ordinate="Counts/ADC" if self._native_fit else "counts/bin",
         )
+
+    def _fit_errors(self, values):
+        if self._native_fit:
+            return gehrels_error(np.asarray(values) * self._active_bin_width) / self._active_bin_width
+        return np.sqrt(np.maximum(values, 1.0))
+
+    def _fit_options(self):
+        return {"scale_covar": False, "max_nfev": getattr(self, "_native_max_nfev", 100000)} if self._native_fit else {}
+
+    @staticmethod
+    def _selection_figure(native, conditions):
+        import pandas as pd
+
+        hk = pd.read_parquet(Path(native["l0_node"]) / "hk.parquet")
+        selected = hk["source_idx"].isin(conditions["selection"]["selected_source_idx"])
+        fig, axes = plt.subplots(2, 1, figsize=(9, 5), sharex=True)
+        for ch in range(4):
+            for ax, name in zip(axes, ("sipm_temp", "bias"), strict=True):
+                ax.plot(hk["source_idx"], hk[f"{name}_ch{ch}"], color="0.8", linewidth=.6)
+                ax.plot(hk.loc[selected, "source_idx"], hk.loc[selected, f"{name}_ch{ch}"],
+                        ".", markersize=2, label=f"CH{ch}")
+        axes[0].set_ylabel("Temperature (°C)")
+        axes[1].set_ylabel("Bias (V)")
+        axes[1].set_xlabel("HK source_idx")
+        axes[0].legend(ncol=4, frameon=False)
+        fig.tight_layout()
+        raw = figure_bytes(fig)
+        plt.close(fig)
+        return raw
 
     def _get_fit_window(
         self,
@@ -749,11 +914,15 @@ class TBL1Processor:
         params["g_center"].set(value=float(peak_x), min=float(lo), max=float(hi))
         params["g_sigma"].set(value=max(sigma_guess, 1.0), min=max(0.7, sigma_guess / 12), max=max(3.0 * sigma_guess, 2.0))
         params["g_amplitude"].set(value=float(np.max(y_cut) * sigma_guess * np.sqrt(2.0 * np.pi)), min=0.0)
-        params["b_intercept"].set(value=float(max(np.percentile(y_cut, 20), 0.0)), min=0.0)
+        # A fitted local continuum can have a negative extrapolated intercept
+        # at ADC=0. Constraining that distant intercept biases a native peak and
+        # makes its bound-transform covariance singular at intercept=0.
+        params["b_intercept"].set(value=float(max(np.percentile(y_cut, 20), 0.0)),
+                                  min=-np.inf if self._native_fit else 0.0)
         params["b_slope"].set(value=0.0)
 
-        weights = 1.0 / np.sqrt(np.maximum(y_cut, 1.0))
-        result = model.fit(y_cut, params, x=x_cut, weights=weights)
+        weights = 1.0 / self._fit_errors(y_cut)
+        result = model.fit(y_cut, params, x=x_cut, weights=weights, **self._fit_options())
         comps = result.eval_components(x=x_cut)
         return result, comps
 
@@ -766,8 +935,8 @@ class TBL1Processor:
         params["e_amplitude"].set(value=float(max(np.percentile(y_cut, 20), 1.0)), min=0.0)
         params["e_decay"].set(value=max(float(np.ptp(x_cut)), 1.), min=1.0, max=max(float(np.ptp(x_cut)) * 100, 1000.))
 
-        weights = 1.0 / np.sqrt(np.maximum(y_cut, 1.0))
-        result = model.fit(y_cut, params, x=x_cut, weights=weights)
+        weights = 1.0 / self._fit_errors(y_cut)
+        result = model.fit(y_cut, params, x=x_cut, weights=weights, **self._fit_options())
         comps = result.eval_components(x=x_cut)
         return result, comps
 
@@ -781,8 +950,8 @@ class TBL1Processor:
         params["q_b"].set(value=0.0)
         params["q_c"].set(value=float(max(np.percentile(y_cut, 20), 0.0)))
 
-        weights = 1.0 / np.sqrt(np.maximum(y_cut, 1.0))
-        result = model.fit(y_cut, params, x=x_cut, weights=weights)
+        weights = 1.0 / self._fit_errors(y_cut)
+        result = model.fit(y_cut, params, x=x_cut, weights=weights, **self._fit_options())
         comps = result.eval_components(x=x_cut)
         return result, comps
 
@@ -793,8 +962,8 @@ class TBL1Processor:
         params["g_sigma"].set(value=max(sigma_guess, 1.0), min=max(0.7, sigma_guess / 12), max=max(3.0 * sigma_guess, 2.0))
         params["g_amplitude"].set(value=float(np.max(y_cut) * sigma_guess * np.sqrt(2.0 * np.pi)), min=0.0)
 
-        weights = 1.0 / np.sqrt(np.maximum(y_cut, 1.0))
-        result = model.fit(y_cut, params, x=x_cut, weights=weights)
+        weights = 1.0 / self._fit_errors(y_cut)
+        result = model.fit(y_cut, params, x=x_cut, weights=weights, **self._fit_options())
         comps = result.eval_components(x=x_cut)
         return result, comps
 
@@ -818,6 +987,12 @@ class TBL1Processor:
             (self._fit_exp_gaus,   FIT_MODE_EXP_GAUS),
             (self._fit_quad_gaus,  FIT_MODE_QUAD_GAUS),
         ]
+        if self._native_fit and getattr(self, "_native_background", "auto") != "auto":
+            mode = {None: FIT_MODE_GAUS, "lin": FIT_MODE_LIN_GAUS,
+                    "exp": FIT_MODE_EXP_GAUS, "quad": FIT_MODE_QUAD_GAUS}.get(self._native_background)
+            if mode is None:
+                raise ValueError(f"Unsupported configured TB background: {self._native_background}")
+            candidates = [(fit_fn, name) for fit_fn, name in candidates if name == mode]
         results = []
         for fit_fn, mode in candidates:
             try:
@@ -825,7 +1000,7 @@ class TBL1Processor:
                 rsq = self._calculate_rsquared(y_cut, result.best_fit)
                 if not result.success or not np.isfinite(result.best_fit).all():
                     continue
-                aic = float(np.sum(((y_cut - result.best_fit) / np.sqrt(np.maximum(y_cut, 1.0))) ** 2)) + 2 * result.nvarys
+                aic = float(np.sum(((y_cut - result.best_fit) / self._fit_errors(y_cut)) ** 2)) + 2 * result.nvarys
                 results.append((result, comps, mode, rsq, aic))
             except Exception:
                 continue
@@ -866,6 +1041,13 @@ class TBL1Processor:
             ax_spec,
             f"ch{ch}: center={fit_res.center:.2f}, sigma={fit_res.sigma:.2f}, mode={fit_res.fit_mode}",
         )
-        style_axes(ax_spec, xlabel="ADC unit", ylabel="counts")
+        style_axes(ax_spec, xlabel="ADC unit", ylabel=fit_res.ordinate)
         adaptive_xlim(ax_spec, fit_res.mids, fit_res.hist, fit_res.center, fit_res.sigma, fit_res.hi)
+        if self._native_fit:
+            padding = (fit_res.hi - fit_res.lo) * .35
+            lower, upper = max(0., fit_res.lo - padding), fit_res.hi + padding
+            ax_spec.set_xlim(lower, upper)
+            visible = fit_res.hist[(fit_res.mids >= lower) & (fit_res.mids <= upper)]
+            if visible.size:
+                ax_spec.set_ylim(min(0., float(visible.min())), 1.12 * max(float(visible.max()), float(np.max(fit_res.best_fit)), 1.))
         style_legend(ax_spec)

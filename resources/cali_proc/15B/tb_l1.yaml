@@ -1,0 +1,522 @@
+payload: 15B
+provenance: current confirmed configs/15B.yaml; explicit raw/HK pairs and windows
+shared:
+  channels: [0, 1, 2, 3]
+  bin_width: 4
+  adc_max: 16384.0
+  background: lin
+  stable:
+    method: four_channel_mean_bias_plateau
+    tolerance_V: 0.3
+  clock:
+    frequency_hz: 100000000.0
+    counter: timestamp1
+    tb_normalization: global_full_sci_first_last
+    ec_normalization: per_physical_channel_first_last
+    max_internal_gap_s: 10.0
+    tb_gap_policy: record gaps; retain TB counts; no live-time claim
+    ec_gap_policy: reject exposure when per-channel internal gap exceeds 10 s
+    evidence: SCI timestamp1 100 MHz; co-latched utc; no shared SCI/HK axis or independent calibration; C15B
+  fit:
+    library: lmfit
+    model: gaussian
+    background: lin
+    max_nfev: 100000
+    scale_covar: false
+    weights: 1/gehrels_error
+measurements:
+  0C_265:
+    files:
+    - raw_data/0C_265_039.event.dat
+    hk_files:
+    - raw_data/0C_265_ecu_077.hk
+    target_bias_V: 26.5
+    fit_range: [[36.9, 151.1], [50.0, 159.1], [46.0, 147.1], [48.9, 163.1]]
+    background: lin
+    accept_residual: 2026-10-11; boundary; user-confirmed; R15B001
+  0C_270:
+    files:
+    - raw_data/0C_270_040.event.dat
+    hk_files:
+    - raw_data/0C_270_ecu_078.hk
+    target_bias_V: 27.0
+    fit_range: [[67.4, 200.6], [79.4, 212.6], [53.9, 206.1], [87.4, 220.6]]
+    background: lin
+    accept_residual: 2026-10-11; boundary; user-confirmed; R15B002
+  0C_275:
+    files:
+    - raw_data/0C_275_041.event.dat
+    hk_files:
+    - raw_data/0C_275_ecu_079.hk
+    target_bias_V: 27.5
+    fit_range: [[96.4, 267.6], [98.9, 289.1], [96.4, 267.6], [110.9, 301.1]]
+    background: lin
+    accept_residual: 2026-10-11; boundary; user-confirmed; R15B003
+  0C_280:
+    files:
+    - raw_data/0C_280_042.event.dat
+    hk_files:
+    - raw_data/0C_280_ecu_080.hk
+    target_bias_V: 28.0
+    fit_range: [[150.9, 341.1], [147.9, 376.1], [137.4, 346.6], [177.4, 386.6]]
+    background: lin
+    accept_residual: 2026-10-11; boundary; user-confirmed; R15B004
+  0C_283:
+    files:
+    - raw_data/0C_283_043.event.dat
+    hk_files:
+    - raw_data/0C_283_ecu_081.hk
+    target_bias_V: 28.3
+    fit_range: [[162.3, 409.7], [195.9, 424.1], [171.9, 400.1], [175.3, 460.7]]
+    background: lin
+    accept_residual: 2026-10-11; boundary; user-confirmed; R15B005
+  0C_285:
+    files:
+    - raw_data/0C_285_044.event.dat
+    hk_files:
+    - raw_data/0C_285_ecu_083.hk
+    target_bias_V: 28.5
+    fit_range: [[163.3, 448.7], [195.3, 480.7], [207.9, 436.1], [205.8, 510.2]]
+    background: lin
+    accept_residual: 2026-10-11; boundary; user-confirmed; R15B006
+  0C_287:
+    files:
+    - raw_data/0C_287_045.event.dat
+    hk_files:
+    - raw_data/0C_287_ecu_084.hk
+    target_bias_V: 28.7
+    fit_range: [[162.8, 505.2], [212.3, 535.7], [203.3, 488.7], [259.3, 544.7]]
+    background: lin
+    accept_residual: 2026-10-11; boundary; user-confirmed; R15B007
+  0C_290:
+    files:
+    - raw_data/0C_290_046.event.dat
+    hk_files:
+    - raw_data/0C_290_ecu_085.hk
+    target_bias_V: 29.0
+    fit_range: [[213.3, 574.7], [266.8, 609.2], [267.3, 552.7], [263.8, 644.2]]
+    background: lin
+    accept_residual: 2026-10-11; boundary; user-confirmed; R15B008
+  10C_265:
+    files:
+    - raw_data/10_265_048.event.dat
+    hk_files:
+    - raw_data/10_265_ecu_087.hk
+    target_bias_V: 26.5
+    fit_range: [[42.0, 129.6], [46.0, 137.6], [46.0, 135.1], [46.4, 141.6]]
+    background: lin
+    accept_residual: 2026-10-11; boundary; user-confirmed; R15B009
+  10C_270:
+    files:
+    - raw_data/10_270_049.event.dat
+    hk_files:
+    - raw_data/10_270_ecu_088.hk
+    target_bias_V: 27.0
+    fit_range: [[41.9, 194.1], [49.9, 202.1], [51.4, 184.6], [80.9, 195.1]]
+    background: lin
+    accept_residual: 2026-10-11; boundary; user-confirmed; R15B010
+  10C_275:
+    files:
+    - raw_data/10_275_050.event.dat
+    hk_files:
+    - raw_data/10_275_ecu_089.hk
+    target_bias_V: 27.5
+    fit_range: [[89.9, 242.1], [92.4, 263.6], [89.9, 242.1], [90.9, 281.1]]
+    background: lin
+    accept_residual: 2026-10-11; boundary; user-confirmed; R15B011
+  10C_280:
+    files:
+    - raw_data/10_280_051.event.dat
+    hk_files:
+    - raw_data/10_280_ecu_090.hk
+    target_bias_V: 28.0
+    fit_range: [[113.4, 322.6], [146.9, 337.1], [140.4, 311.6], [149.4, 358.6]]
+    background: lin
+    accept_residual: 2026-10-11; boundary; user-confirmed; R15B012
+  10C_283:
+    files:
+    - raw_data/10_283_052.event.dat
+    hk_files:
+    - raw_data/10_283_ecu_091.hk
+    target_bias_V: 28.3
+    fit_range: [[161.4, 370.6], [167.9, 396.1], [147.9, 376.1], [147.3, 432.7]]
+    background: lin
+    accept_residual: 2026-10-11; boundary; user-confirmed; R15B013
+  10C_285:
+    files:
+    - raw_data/10_285_053.event.dat
+    hk_files:
+    - raw_data/10_285_ecu_092.hk
+    target_bias_V: 28.5
+    fit_range: [[139.3, 424.7], [180.8, 447.2], [160.8, 427.2], [227.9, 456.1]]
+    background: lin
+    accept_residual: 2026-10-11; boundary; user-confirmed; R15B014
+  10C_287:
+    files:
+    - raw_data/10_287_054.event.dat
+    hk_files:
+    - raw_data/10_287_ecu_093.hk
+    target_bias_V: 28.7
+    fit_range: [[188.8, 455.2], [166.8, 509.2], [165.8, 470.2], [227.3, 512.7]]
+    background: lin
+    accept_residual: 2026-10-11; boundary; user-confirmed; R15B015
+  10C_290:
+    files:
+    - raw_data/10_290_055.event.dat
+    hk_files:
+    - raw_data/10_290_ecu_094.hk
+    target_bias_V: 29.0
+    fit_range: [[212.3, 535.7], [226.8, 569.2], [260.8, 527.2], [231.8, 612.2]]
+    background: lin
+    accept_residual: 2026-10-11; boundary; user-confirmed; R15B016
+  20C_265:
+    files:
+    - raw_data/20_265_060.event.dat
+    hk_files:
+    - raw_data/20_265_ecu_099.hk
+    target_bias_V: 26.5
+    fit_range: [[46.0, 112.0], [46.0, 121.6], [46.0, 117.6], [46.0, 125.6]]
+    background: lin
+    accept_residual: 2026-10-11; boundary; user-confirmed; R15B017
+  20C_270:
+    files:
+    - raw_data/20_270_058.event.dat
+    hk_files:
+    - raw_data/20_270_ecu_097.hk
+    target_bias_V: 27.0
+    fit_range: [[58.0, 163.1], [58.0, 171.1], [58.0, 163.1], [62.0, 184.6]]
+    background: lin
+    accept_residual: 2026-10-11; boundary; user-confirmed; R15B018
+  20C_275:
+    files:
+    - raw_data/20_275_061.event.dat
+    hk_files:
+    - raw_data/20_275_ecu_100.hk
+    target_bias_V: 27.5
+    fit_range: [[74.0, 226.1], [78.0, 243.6], [74.0, 226.1], [93.9, 246.1]]
+    background: lin
+    accept_residual: 2026-10-11; boundary; user-confirmed; R15B019
+  20C_280:
+    files:
+    - raw_data/20_280_064.event.dat
+    hk_files:
+    - raw_data/20_280_ecu_103.hk
+    target_bias_V: 28.0
+    fit_range: [[106.9, 297.1], [113.4, 322.6], [102.0, 306.6], [111.9, 340.1]]
+    background: lin
+    accept_residual: 2026-10-11; boundary; user-confirmed; R15B020
+  20C_283:
+    files:
+    - raw_data/20_283_065.event.dat
+    hk_files:
+    - raw_data/20_283_ecu_104.hk
+    target_bias_V: 28.3
+    fit_range: [[137.4, 346.6], [143.9, 372.1], [118.0, 361.7], [159.9, 388.1]]
+    background: lin
+    accept_residual: 2026-10-11; boundary; user-confirmed; R15B021
+  20C_285:
+    files:
+    - raw_data/20_285_066.event.dat
+    hk_files:
+    - raw_data/20_285_ecu_106.hk
+    target_bias_V: 28.5
+    fit_range: [[142.3, 389.7], [112.3, 435.7], [132.8, 399.2], [159.3, 444.7]]
+    background: lin
+    accept_residual: 2026-10-11; boundary; user-confirmed; R15B022
+  20C_287:
+    files:
+    - raw_data/20_287_067.event.dat
+    hk_files:
+    - raw_data/20_287_ecu_107.hk
+    target_bias_V: 28.7
+    fit_range: [[146.0, 446.2], [188.8, 455.2], [151.3, 436.7], [199.3, 484.7]]
+    background: lin
+    accept_residual: 2026-10-11; boundary; user-confirmed; R15B023
+  20C_290:
+    files:
+    - raw_data/20_290_068.event.dat
+    hk_files:
+    - raw_data/20_290_ecu_108.hk
+    target_bias_V: 29.0
+    fit_range: [[170.8, 513.2], [235.3, 520.7], [211.3, 496.7], [249.8, 554.2]]
+    background: lin
+    accept_residual: 2026-10-11; boundary; user-confirmed; R15B024
+  30C_270:
+    files:
+    - raw_data/30_270_071.event.dat
+    hk_files:
+    - raw_data/30_270_ecu_112.hk
+    target_bias_V: 27.0
+    fit_range: [[66.0, 151.1], [70.0, 164.6], [66.0, 156.6], [74.0, 168.6]]
+    background: lin
+    accept_residual: 2026-10-11; boundary; user-confirmed; R15B025
+  30C_275:
+    files:
+    - raw_data/30_275_072.event.dat
+    hk_files:
+    - raw_data/30_275_ecu_113.hk
+    target_bias_V: 27.5
+    fit_range: [[90.0, 215.6], [90.0, 218.1], [86.0, 210.1], [98.0, 231.6]]
+    background: lin
+    accept_residual: null
+  30C_280:
+    files:
+    - raw_data/30_280_074.event.dat
+    hk_files:
+    - raw_data/30_280_ecu_115.hk
+    target_bias_V: 28.0
+    fit_range: [[77.4, 286.6], [89.4, 298.6], [77.4, 286.6], [122.0, 316.1]]
+    background: lin
+    accept_residual: null
+  30C_283:
+    files:
+    - raw_data/30_283_075.event.dat
+    hk_files:
+    - raw_data/30_283_ecu_116.hk
+    target_bias_V: 28.3
+    fit_range: [[138.0, 337.7], [134.0, 353.7], [134.0, 341.7], [154.0, 373.7]]
+    background: lin
+    accept_residual: null
+  30C_285:
+    files:
+    - raw_data/30_285_076.event.dat
+    hk_files:
+    - raw_data/30_285_ecu_117.hk
+    target_bias_V: 28.5
+    fit_range: [[154.0, 360.1], [128.8, 395.2], [95.3, 380.7], [166.0, 431.7]]
+    background: lin
+    accept_residual: null
+  30C_287:
+    files:
+    - raw_data/30_287_078.event.dat
+    hk_files:
+    - raw_data/30_287_ecu_119.hk
+    target_bias_V: 28.7
+    fit_range: [[170.0, 407.2], [147.3, 432.7], [131.3, 416.7], [182.0, 462.2]]
+    background: lin
+    accept_residual: null
+  30C_290:
+    files:
+    - raw_data/30_290_079.event.dat
+    hk_files:
+    - raw_data/30_290_ecu_120.hk
+    target_bias_V: 29.0
+    fit_range: [[198.0, 486.7], [202.0, 509.2], [133.3, 494.7], [218.0, 559.3]]
+    background: lin
+    accept_residual: null
+  m10C_265:
+    files:
+    - raw_data/m10_265_030.event.dat
+    hk_files:
+    - raw_data/m10_265_ecu_068.hk
+    target_bias_V: 26.5
+    fit_range: [[52.9, 167.1], [60.9, 175.1], [48.9, 163.1], [64.9, 179.1]]
+    background: lin
+    accept_residual: 2026-10-11; boundary; user-confirmed; R15B026
+  m10C_270:
+    files:
+    - raw_data/m10_270_031.event.dat
+    hk_files:
+    - raw_data/m10_270_ecu_069.hk
+    target_bias_V: 27.0
+    fit_range: [[96.9, 211.1], [85.9, 238.1], [69.9, 222.1], [93.9, 246.1]]
+    background: lin
+    accept_residual: 2026-10-11; boundary; user-confirmed; R15B027
+  m10C_275:
+    files:
+    - raw_data/m10_275_032.event.dat
+    hk_files:
+    - raw_data/m10_275_ecu_070.hk
+    target_bias_V: 27.5
+    fit_range: [[116.4, 287.6], [122.9, 313.1], [112.4, 283.6], [107.9, 336.1]]
+    background: lin
+    accept_residual: 2026-10-11; boundary; user-confirmed; R15B028
+  m10C_280:
+    files:
+    - raw_data/m10_280_033.event.dat
+    hk_files:
+    - raw_data/m10_280_ecu_071.hk
+    target_bias_V: 28.0
+    fit_range: [[134.3, 381.7], [171.9, 400.1], [130.3, 377.7], [133.8, 438.2]]
+    background: lin
+    accept_residual: 2026-10-11; boundary; user-confirmed; R15B029
+  m10C_283:
+    files:
+    - raw_data/m10_283_034.event.dat
+    hk_files:
+    - raw_data/m10_283_ecu_072.hk
+    target_bias_V: 28.3
+    fit_range: [[164.8, 431.2], [169.8, 474.2], [168.8, 435.2], [226.3, 473.7]]
+    background: lin
+    accept_residual: 2026-10-11; boundary; user-confirmed; R15B030
+  m10C_285:
+    files:
+    - raw_data/m10_285_035.event.dat
+    hk_files:
+    - raw_data/m10_285_ecu_073.hk
+    target_bias_V: 28.5
+    fit_range: [[191.3, 476.7], [219.3, 504.7], [187.3, 472.7], [243.3, 528.7]]
+    background: lin
+    accept_residual: 2026-10-11; boundary; user-confirmed; R15B031
+  m10C_287:
+    files:
+    - raw_data/m10_287_036.event.dat
+    hk_files:
+    - raw_data/m10_287_ecu_074.hk
+    target_bias_V: 28.7
+    fit_range: [[217.8, 522.2], [226.8, 569.2], [217.8, 522.2], [260.3, 583.7]]
+    background: lin
+    accept_residual: 2026-10-11; boundary; user-confirmed; R15B032
+  m10C_290:
+    files:
+    - raw_data/m10_290_037.event.dat
+    hk_files:
+    - raw_data/m10_290_ecu_075.hk
+    target_bias_V: 29.0
+    fit_range: [[272.3, 595.7], [212.2, 687.8], [214.2, 613.8], [299.8, 680.2]]
+    background: lin
+    accept_residual: 2026-10-11; boundary; user-confirmed; R15B033
+  m20C_265:
+    files:
+    - raw_data/m20C-265-012.event.dat
+    hk_files:
+    - raw_data/m20C-265-ecu_047.hk
+    target_bias_V: 26.5
+    fit_range: [[64.9, 179.1], [63.4, 196.6], [60.9, 175.1], [71.4, 204.6]]
+    background: lin
+    accept_residual: null
+  m20C_270:
+    files:
+    - raw_data/m20C-270-013.event.dat
+    hk_files:
+    - raw_data/m20C-270-ecu_048.hk
+    target_bias_V: 27.0
+    fit_range: [[89.9, 242.1], [92.4, 263.6], [72.4, 243.6], [100.4, 271.6]]
+    background: lin
+    accept_residual: 2026-10-11; boundary; user-confirmed; R15B034
+  m20C_275:
+    files:
+    - raw_data/m20C-275-014.event.dat
+    hk_files:
+    - raw_data/m20C-275-ecu_049.hk
+    target_bias_V: 27.5
+    fit_range: [[95.9, 324.1], [129.4, 338.6], [114.9, 305.1], [114.3, 361.7]]
+    background: lin
+    accept_residual: 2026-10-11; boundary; user-confirmed; R15B035
+  m20C_280:
+    files:
+    - raw_data/m20C-280-015.event.dat
+    hk_files:
+    - raw_data/m20C-280-ecu_050.hk
+    target_bias_V: 28.0
+    fit_range: [[167.9, 396.1], [205.4, 414.6], [150.3, 397.7], [157.8, 462.2]]
+    background: lin
+    accept_residual: 2026-10-11; boundary; user-confirmed; R15B036
+  m20C_283:
+    files:
+    - raw_data/m20C-283-016.event.dat
+    hk_files:
+    - raw_data/m20C-283-ecu_051.hk
+    target_bias_V: 28.3
+    fit_range: [[152.3, 475.7], [184.3, 507.7], [188.8, 455.2], [186.8, 529.2]]
+    background: lin
+    accept_residual: 2026-10-11; boundary; user-confirmed; R15B037
+  m20C_285:
+    files:
+    - raw_data/m20C-285-017.event.dat
+    hk_files:
+    - raw_data/m20C-285-ecu_052.hk
+    target_bias_V: 28.5
+    fit_range: [[174.8, 517.2], [210.8, 553.2], [201.8, 506.2], [230.8, 573.2]]
+    background: lin
+    accept_residual: 2026-10-11; boundary; user-confirmed; R15B038
+  m20C_287:
+    files:
+    - raw_data/m20C-287-018.event.dat
+    hk_files:
+    - raw_data/m20C-287-ecu_053.hk
+    target_bias_V: 28.7
+    fit_range: [[205.3, 566.7], [208.7, 627.3], [251.3, 536.7], [292.3, 615.7]]
+    background: lin
+    accept_residual: 2026-10-11; boundary; user-confirmed; R15B039
+  m20C_290:
+    files:
+    - raw_data/m20C-290-019.event.dat
+    hk_files:
+    - raw_data/m20C-290-ecu_054.hk
+    target_bias_V: 29.0
+    fit_range: [[259.8, 640.2], [230.7, 725.3], [288.3, 611.7], [210.0, 767.4]]
+    background: lin
+    accept_residual: 2026-10-11; boundary; user-confirmed; R15B040
+  m30C_265:
+    files:
+    - raw_data/m30_265_022.event.dat
+    hk_files:
+    - raw_data/m30_265_ecu_059.hk
+    target_bias_V: 26.5
+    fit_range: [[67.4, 200.6], [79.4, 212.6], [72.9, 187.1], [83.4, 216.6]]
+    background: lin
+    accept_residual: 2026-10-11; boundary; user-confirmed; R15B041
+  m30C_270:
+    files:
+    - raw_data/m30_270_023.event.dat
+    hk_files:
+    - raw_data/m30_270_ecu_060.hk
+    target_bias_V: 27.0
+    fit_range: [[92.4, 263.6], [94.9, 285.1], [97.9, 250.1], [116.4, 287.6]]
+    background: lin
+    accept_residual: 2026-10-11; boundary; user-confirmed; R15B042
+  m30C_275:
+    files:
+    - raw_data/m30_275_024.event.dat
+    hk_files:
+    - raw_data/m30_275_ecu_061.hk
+    target_bias_V: 27.5
+    fit_range: [[111.9, 340.1], [145.4, 354.6], [107.9, 336.1], [143.9, 372.1]]
+    background: lin
+    accept_residual: 2026-10-11; boundary; user-confirmed; R15B043
+  m30C_280:
+    files:
+    - raw_data/m30_280_025.event.dat
+    hk_files:
+    - raw_data/m30_280_ecu_062.hk
+    target_bias_V: 28.0
+    fit_range: [[151.3, 436.7], [179.3, 464.7], [156.8, 423.2], [177.8, 482.2]]
+    background: lin
+    accept_residual: 2026-10-11; boundary; user-confirmed; R15B044
+  m30C_283:
+    files:
+    - raw_data/m30_283_026.event.dat
+    hk_files:
+    - raw_data/m30_283_ecu_063.hk
+    target_bias_V: 28.3
+    fit_range: [[185.8, 490.2], [235.3, 520.7], [191.3, 476.7], [214.8, 557.2]]
+    background: lin
+    accept_residual: 2026-10-11; boundary; user-confirmed; R15B045
+  m30C_285:
+    files:
+    - raw_data/m30_285_027.event.dat
+    hk_files:
+    - raw_data/m30_285_ecu_064.hk
+    target_bias_V: 28.5
+    fit_range: [[225.8, 530.2], [257.8, 562.2], [190.8, 533.2], [218.2, 617.8]]
+    background: lin
+    accept_residual: 2026-10-11; boundary; user-confirmed; R15B046
+  m30C_287:
+    files:
+    - raw_data/m30_287_028.event.dat
+    hk_files:
+    - raw_data/m30_287_ecu_065.hk
+    target_bias_V: 28.7
+    fit_range: [[265.8, 570.2], [255.8, 636.2], [221.3, 582.7], [306.8, 649.2]]
+    background: lin
+    accept_residual: 2026-10-11; boundary; user-confirmed; R15B047
+  m30C_290:
+    files:
+    - raw_data/m30_290_029.event.dat
+    hk_files:
+    - raw_data/m30_290_ecu_066.hk
+    target_bias_V: 29.0
+    fit_range: [[293.3, 654.7], [326.2, 725.8], [275.8, 656.2], [346.2, 745.8]]
+    background: lin
+    accept_residual: 2026-10-11; boundary; user-confirmed; R15B048

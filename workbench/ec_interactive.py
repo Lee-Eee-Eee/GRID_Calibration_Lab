@@ -97,7 +97,7 @@ class ECInspector:
             import pyarrow.parquet as pq
 
             names = pq.read_schema(path).names
-            columns = [name for name in ("channel", "amp_corr", "utc", "crc_check") if name in names]
+            columns = [name for name in ("channel", "amp_corr", "utc", "timestamp1", "source_idx", "crc_check") if name in names]
             frame = pq.read_table(path, columns=columns).to_pandas()
             frame, quality = validated_events(frame)
             frame.attrs["crc_input_quality"] = quality
@@ -135,7 +135,8 @@ class ECInspector:
                 raise ValueError("EC 谱文件已更新，请重新读取")
             return prepared, len(signal), signal_quality
 
-        key = ("ec-prepared", signal_key, background_key, channel, background_channel, float(bin_width))
+        key = ("ec-prepared", processor.analysis_contract, signal_key, background_key,
+               channel, background_channel, float(bin_width))
         return (*EC_READ_CACHE.get(key, load), signal_key, background_key)
 
     def points(self, payload: str, product_root: Path, channel: int | None = None) -> list[dict]:
@@ -214,11 +215,17 @@ class ECInspector:
         summary = read_json(path) if path else {}
         params = summary.get("calibration_params", {}).get(str(channel))
         split = float(summary.get("energy_split", 49.0))
+        native_model = summary.get("analysis_contract") == "cali_proc@0.5"
+        split_high = float(summary.get("energy_split_high") or split)
         manifests = self._files(payload, product_root, "EC_L3", "json", "L3_manifest.json")
         manifest = read_json(manifests[-1]) if manifests else {}
         excluded = set(manifest.get("excluded_points", []))
         available = [row for row in rows if row["quality_pass"] and row["id"] not in excluded]
         kept = ECL3Processor._filter_monotonic(available)
+        if native_model:
+            kept = [row for row in kept if
+                    (row["E"] < split and (params or {}).get("EC_low")) or
+                    (row["E"] >= split_high and (params or {}).get("EC_high"))]
         kept_ids = {row["id"] for row in kept}
         coefficients = (params or {}).get("EC_low")
         for row in rows:
@@ -229,7 +236,9 @@ class ECInspector:
                     row["quality_reasons"].append(reason)
             row["quality_suspect"] = bool(row["quality_reasons"])
             row["predicted_energy"] = (
-                float(np.polyval(coefficients, row["center"])) if coefficients and row["quality_pass"] else None
+                float(np.polyval((params or {}).get("EC_low" if row["E"] < split else "EC_high"), row["center"]))
+                if native_model and row["quality_pass"] and (row["E"] < split or row["E"] >= split_high) and (params or {}).get("EC_low" if row["E"] < split else "EC_high") else
+                float(np.polyval(coefficients, row["center"])) if not native_model and coefficients and row["quality_pass"] else None
             )
             row["residual_keV"] = (
                 row["E"] - row["predicted_energy"] if row["predicted_energy"] is not None else None
@@ -237,9 +246,17 @@ class ECInspector:
         curve = {"x": [], "y": []}
         resolution_curve = {"x": [], "y": []}
         numeric = [row for row in rows if row["quality_pass"]]
-        if numeric and coefficients:
+        if numeric and (coefficients or native_model and (params or {}).get("EC_high")):
             adc = np.linspace(min(row["center"] for row in numeric), max(row["center"] for row in numeric), 250)
-            curve = {"x": adc, "y": np.polyval(coefficients, adc)}
+            if native_model:
+                lower = np.polyval(coefficients, adc) if coefficients else np.full_like(adc, np.nan)
+                higher = params.get("EC_high")
+                upper = np.polyval(higher, adc) if higher else np.full_like(adc, np.nan)
+                curve = {"x": adc, "y": [float(lo) if np.isfinite(lo) and lo < split else
+                                          float(hi) if np.isfinite(hi) and hi >= split_high else None
+                                          for lo, hi in zip(lower, upper, strict=True)]}
+            else:
+                curve = {"x": adc, "y": np.polyval(coefficients, adc)}
         if numeric and params:
             energies = np.geomspace(
                 max(min(row["E"] for row in numeric), 0.01), max(row["E"] for row in numeric), 250
@@ -247,7 +264,8 @@ class ECInspector:
             resolution = []
             for energy in energies:
                 coeff = params.get("resolution_low" if energy <= split else "resolution_high")
-                resolution.append(float(res_fit(energy, *coeff)) if coeff else None)
+                resolution.append((float(100 * np.sqrt(max(0, coeff[0]*energy**2+coeff[1]*energy+coeff[2])) / energy)
+                                   if native_model else float(res_fit(energy, *coeff))) if coeff and (not native_model or energy < split or energy >= split_high) else None)
             resolution_curve = {"x": energies, "y": resolution}
         residuals = [row["residual_keV"] for row in rows if row["used"] and row["residual_keV"] is not None]
         return _clean(
@@ -265,7 +283,8 @@ class ECInspector:
                     "n_excluded": sum(row["excluded"] for row in rows),
                     "rmse_keV": np.sqrt(np.mean(np.square(residuals))) if residuals else None,
                 },
-                "model_direction": "E(ADC); existing processor uses shared low/high coefficients",
+                "model_direction": "E(ADC); separate low/high ODR fits" if native_model else
+                                   "E(ADC); existing processor uses shared low/high coefficients",
             }
         )
 
@@ -283,6 +302,15 @@ class ECInspector:
         point = dict(point)
         ch, stem = point["channel"], point["stem"]
         self._channel(ch)
+        if point.get("contract_node"):
+            from ..common.contract_import import read_saved_spectrum
+            saved = read_saved_spectrum(Path(point["contract_node"]), ch, "ec")
+            saved.update(id=selected_id, stem=stem, point=point, fit=point,
+                         yerr=saved["error"], y_label=saved["ordinate"],
+                         bin_width=saved["histogram_config"]["bin_width"],
+                         lo=point.get("lo"), hi=point.get("hi"), tb_correction={},
+                         fit_input_verified=True)
+            return _clean(saved)
         path = (
             self._named_parquet(payload, product_root, point["signal_file"])
             if point.get("signal_file")
@@ -310,7 +338,9 @@ class ECInspector:
             background_path = self._parquet(payload, product_root, stem, background_ch)
         if background_path is None and "background_file" not in point:
             raise FileNotFoundError(f"No EC background spectrum for {stem} ch{background_ch}")
-        processor = ECL2Processor(payload, product_root)
+        contract = (getattr(self.adapter, "acquisition", None) or {})
+        processor = ECL2Processor(payload, product_root, analysis_contract=contract.get("analysis_contract"),
+                                 analysis_config=contract.get("analysis_config"))
         bin_width = float(point.get("bin_width", BIN_WIDTH))
         prepared, n_events, signal_quality, signal_key, background_key = self._prepared(
             processor, path, ch, background_path, background_ch, bin_width)
@@ -414,7 +444,7 @@ class ECInspector:
                 "bin_width": bin_width,
                 "window_bounds": {"min": 0., "max": max(float(x[-1] + bin_width / 2), hi),
                                   "minimum_width": 8 * bin_width},
-                "y_label": f"Count rate / {bin_width:g} ADC bin (s⁻¹)",
-                "normalization": "Processor UTC-axis acquisition duration; signal and background normalized independently",
+                "y_label": "Counts / (s · ADC)" if processor.analysis_contract else f"Count rate / {bin_width:g} ADC bin (s⁻¹)",
+                "normalization": "Per-channel native timestamp1 span at 100 MHz; independent roles" if processor.analysis_contract else "Processor UTC-axis acquisition duration; signal and background normalized independently",
             }
         )

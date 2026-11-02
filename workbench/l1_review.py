@@ -131,7 +131,8 @@ def overview(workbench, run_id):
         fitted = sum(item["fit_status"] in ("fitted", "suspect") and not item["pending_window"] for item in supported)
         attention = any(item["fit_status"] in ("failed", "suspect") for item in supported)
         needs_fit = any(item["pending_window"] for item in supported)
-        files.append({"stem": stem, "has_l0": stem in l0, "channels": channels,
+        files.append({"stem": stem, "has_l0": stem in l0,
+                      "has_saved_spectrum": any(row.get("contract_node") for row in records.get(stem, [])), "channels": channels,
                       "fitted": fitted, "status": "attention" if attention else "fitted" if fitted == len(supported) and not needs_fit else "pending"})
     return {"files": files, "layer": "TB_L1", "payload": payload}
 

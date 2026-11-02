@@ -130,13 +130,14 @@ def catalog(adapter, payload, product_root, *, profile=None, config=None):
     channels = list(photopeak_channels(identity))
     for path in _files(adapter, payload, product_root, "EC_L1", "parquet", "src_*_corr.l1.parquet"):
         match = SOURCE_FILE.fullmatch(path.name)
-        if not match or match["name"].lower() == "bkg":
-            continue
-        key, name = f"src_{match['name']}", match["name"]
         try:
             metadata = read_parquet_metadata(path, "tb_correction") or {}
         except (OSError, ValueError, TypeError):
             metadata = {}
+        name = metadata.get("source_name") or (match["name"] if match else None)
+        if not name or str(name).lower() == "bkg" or path.name.startswith("src_bkg_"):
+            continue
+        key = f"src_{name}"
         definition = definitions.get(_source_alias(name))
         explicit = preset_definitions.get(_source_alias(name))
         energies = (_energy_lines(explicit.get("energies_keV")) if explicit else
@@ -148,7 +149,7 @@ def catalog(adapter, payload, product_root, *, profile=None, config=None):
                                         "signal_file": path.name, "source_path": str(path), "source_files": [],
                                         "available_channels": channels, "origin": origin, "lines": [], "_records": []})
         entry["source_files"].append({"name": path.name, "path": str(path),
-                                      "exposure_minutes": metadata.get("exposure_minutes", float(match["minutes"]))})
+                                      "exposure_minutes": metadata.get("exposure_minutes", float(match["minutes"]) if match else None)})
         for energy in energies:
             if not any(_same_energy(row["energy_keV"], energy) for row in entry["lines"]):
                 entry["lines"].append({"energy_keV": energy, "windows": {}, "centers": {}, "origin": origin})
@@ -165,6 +166,10 @@ def catalog(adapter, payload, product_root, *, profile=None, config=None):
         entry = spectra.setdefault(key, {"energy_key": key, "source_name": key.removeprefix("src_"),
                                         "signal_file": None, "source_path": None, "source_files": [],
                                         "available_channels": channels, "origin": "result", "lines": [], "_records": []})
+        source_name = next((record.get("source_name") for record in records
+                            if isinstance(record, dict) and record.get("source_name")), None)
+        if source_name:
+            entry["source_name"] = source_name
         entry["_records"] = records
         for record in records:
             energies = _energy_lines([record.get("E")])

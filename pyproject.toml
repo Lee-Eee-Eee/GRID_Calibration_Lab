@@ -24,13 +24,14 @@ dependencies = [
     "numpy>=1.24",
     "pandas>=2.0",
     "pyarrow>=14.0",
-    "scipy>=1.11",
+    "scipy>=1.11,<1.19",
     "matplotlib>=3.7",
     "lmfit>=1.2",
     "h5py>=3.9",
     "crcmod>=1.7",
     "numba>=0.58",
     "addict>=2.4",
+    "PyYAML>=6.0",
 ]
 
 [project.optional-dependencies]

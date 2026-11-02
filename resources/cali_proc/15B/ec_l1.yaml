@@ -1,0 +1,560 @@
+payload: 15B
+provenance: current confirmed configs/15B.yaml; 3 source + 11 X_new analyses
+shared:
+  channels: [0, 1, 2, 3]
+  bin_width: 4.0
+  adc_max: 16384.0
+  ref:
+    temp_C: 25.0
+    bias_V: 28.5
+  selection:
+    method: four_channel_mean_bias_plateau
+    tolerance_V: 0.3
+    sci_utc_crop: false
+    shared_axis: false
+  clock:
+    counter: timestamp1
+    frequency_hz: 100000000.0
+    normalization: event_span
+    ec_normalization: per_physical_channel_first_last
+    max_internal_gap_s: 10.0
+    limitation: elapsed acquisition span; not live time and not a shared SCI/HK axis
+  corr:
+    mode: mean
+    mapping: constant
+    evidence: Channel-specific fixed TB model; constant role/channel HK plateau
+    tb_model: null
+  map:
+    method: constant
+    evidence: 2026-10-18; X_new per-channel illumination; role/channel HK plateau mean; no shared SCI-HK event axis
+  fit:
+    library: lmfit
+    model: gaussian
+    max_nfev: 100000
+    scale_covar: false
+source:
+  Na22:
+    id: Na22
+    files:
+    - ec_source/Na22_5m_083.event.dat
+    background_files:
+    - ec_source/Bkg_30m_084.event.dat
+    hk_files:
+    - ec_source/Na22_5m_ecu_126.hk
+    background_hk_files:
+    - ec_source/Bkg_30m_ecu_127.hk
+    energy_keV: 511.004
+    fit_range: [[2470.1, 3341.9], [2725.1, 3686.9], [2493.9, 3374.1], [2850.9, 3857.1]]
+    background: lin
+    qa:
+      redchi_warn: 5.0
+      redchi_fail: 50.0
+    selection:
+      hk_bias: 28.5
+    background_selection:
+      hk_bias: 28.5
+    scale:
+      mode: exposure_ratio
+      method: event_span
+      computed_at_runtime: true
+      evidence: 2026-10-18; primary/background selected event spans at 100 MHz; not live time
+    window_guard: null
+    accept_residual: '2026-10-18; boundary; explicit zero-fill/truncation evidence; ec_source/Na22_5m_083.event.dat:
+      leading zero fill=28311736 bytes at offset 0; trailing unrecognized_bytes=416 at offset 61210208 and truncated_packets=1;
+      aggregate unrecognized_bytes=28312152; ec_source/Bkg_30m_084.event.dat: unrecognized_bytes=552, truncated_packets=1'
+  Cs137:
+    id: Cs137
+    files:
+    - ec_source/CS137_25m_082.event.dat
+    background_files:
+    - ec_source/Bkg_30m_084.event.dat
+    hk_files:
+    - ec_source/CS137_25m_ecu_125.hk
+    background_hk_files:
+    - ec_source/Bkg_30m_ecu_127.hk
+    energy_keV: 661.657
+    fit_range: [[3250.4, 4397.6], [3570.0, 4830.0], [3236.8, 4379.2], [3719.6, 5032.4]]
+    background: lin
+    qa:
+      redchi_warn: 5.0
+      redchi_fail: 50.0
+    selection:
+      hk_bias: 28.5
+    background_selection:
+      hk_bias: 28.5
+    scale:
+      mode: exposure_ratio
+      method: event_span
+      computed_at_runtime: true
+      evidence: 2026-10-18; primary/background selected event spans at 100 MHz; not live time
+    window_guard: null
+    accept_residual: '2026-10-18; boundary; explicit zero-fill/truncation evidence; ec_source/CS137_25m_082.event.dat:
+      unrecognized_bytes=120, truncated_packets=1; ec_source/Bkg_30m_084.event.dat: unrecognized_bytes=552, truncated_packets=1'
+  Co60:
+    id: Co60
+    files:
+    - ec_source/Co60_40m_081.event.dat
+    background_files:
+    - ec_source/Bkg_30m_084.event.dat
+    hk_files:
+    - ec_source/Co60_ 40m_ecu_124.hk
+    background_hk_files:
+    - ec_source/Bkg_30m_ecu_127.hk
+    energy_keV: 1332.492
+    fit_range: [[6066.0, 7414.0], [6627.6, 8100.4], [6109.2, 7466.8], [6980.4, 8531.6]]
+    background: gaus
+    qa:
+      redchi_warn: 5.0
+      redchi_fail: 50.0
+    selection:
+      hk_bias: 28.5
+    background_selection:
+      hk_bias: 28.5
+    scale:
+      mode: exposure_ratio
+      method: event_span
+      computed_at_runtime: true
+      evidence: 2026-10-18; primary/background selected event spans at 100 MHz; not live time
+    window_guard:
+      anchor_energy_keV: 1332.492
+      forbidden_adc: [[5000.0, 6000.0], [5600.0, 6500.0], [5000.0, 6100.0], [6000.0, 6950.0]]
+    accept_residual: '2026-10-18; boundary; explicit zero-fill/truncation evidence; ec_source/Co60_40m_081.event.dat:
+      unrecognized_bytes=512, truncated_packets=1; ec_source/Bkg_30m_084.event.dat: unrecognized_bytes=552, truncated_packets=1'
+xray:
+  '40':
+    id: '40'
+    files:
+    - ec_xray_new/40-ch0-160.event.dat
+    - ec_xray_new/40-ch1-159.event.dat
+    - ec_xray_new/40-ch2-161.event.dat
+    - ec_xray_new/40-ch3-162.event.dat
+    background_files:
+    - ec_xray_new/40-ch1-159.event.dat
+    - ec_xray_new/40-ch2-161.event.dat
+    - ec_xray_new/40-ch3-162.event.dat
+    - ec_xray_new/40-ch0-160.event.dat
+    hk_files:
+    - ec_xray_new/40-ch0-ecu_205.hk
+    - ec_xray_new/40-ch1-ecu_204.hk
+    - ec_xray_new/40-ch2-ecu_206.hk
+    - ec_xray_new/40-ch3-ecu_207.hk
+    background_hk_files:
+    - ec_xray_new/40-ch1-ecu_204.hk
+    - ec_xray_new/40-ch2-ecu_206.hk
+    - ec_xray_new/40-ch3-ecu_207.hk
+    - ec_xray_new/40-ch0-ecu_205.hk
+    energy_keV: 40
+    fit_range: [[130.2, 303.8], [141.0, 329.0], [133.8, 356.8], [147.0, 343.0]]
+    background: lin
+    qa:
+      redchi_warn: 5.0
+      redchi_fail: 50.0
+    selection:
+      hk_bias: 28.5
+    background_selection:
+      hk_bias: 28.5
+    rotation: [1, 2, 3, 0]
+    scale:
+      mode: four_slot_coverage
+      method: event_span
+      computed_at_runtime: true
+      evidence: 2026-10-18; X_new one-step [ch1,ch2,ch3,ch0] rotation; selected event-span ratios; not live time
+    accept_residual: '2026-10-18; boundary; explicit zero-fill/truncation evidence; ec_xray_new/40-ch2-161.event.dat:
+      unrecognized_bytes=184, truncated_packets=1'
+  '45':
+    id: '45'
+    files:
+    - ec_xray_new/45-ch0-155.event.dat
+    - ec_xray_new/45-ch1-154.event.dat
+    - ec_xray_new/45-ch2-156.event.dat
+    - ec_xray_new/45-ch3-157.event.dat
+    background_files:
+    - ec_xray_new/45-ch1-154.event.dat
+    - ec_xray_new/45-ch2-156.event.dat
+    - ec_xray_new/45-ch3-157.event.dat
+    - ec_xray_new/45-ch0-155.event.dat
+    hk_files:
+    - ec_xray_new/45-ch0-ecu_200.hk
+    - ec_xray_new/45-ch1-ecu_199.hk
+    - ec_xray_new/45-ch2-ecu_201.hk
+    - ec_xray_new/45-ch3-ecu_202.hk
+    background_hk_files:
+    - ec_xray_new/45-ch1-ecu_199.hk
+    - ec_xray_new/45-ch2-ecu_201.hk
+    - ec_xray_new/45-ch3-ecu_202.hk
+    - ec_xray_new/45-ch0-ecu_200.hk
+    energy_keV: 45
+    fit_range: [[145.8, 340.2], [153.0, 357.0], [147.0, 343.0], [167.4, 390.6]]
+    background: lin
+    qa:
+      redchi_warn: 5.0
+      redchi_fail: 50.0
+    selection:
+      hk_bias: 28.5
+    background_selection:
+      hk_bias: 28.5
+    rotation: [1, 2, 3, 0]
+    scale:
+      mode: four_slot_coverage
+      method: event_span
+      computed_at_runtime: true
+      evidence: 2026-10-18; X_new one-step [ch1,ch2,ch3,ch0] rotation; selected event-span ratios; not live time
+    accept_residual: null
+  '47':
+    id: '47'
+    files:
+    - ec_xray_new/47-ch0-151.event.dat
+    - ec_xray_new/47-ch1-150.event.dat
+    - ec_xray_new/47-ch2-152.event.dat
+    - ec_xray_new/47-ch3-153.event.dat
+    background_files:
+    - ec_xray_new/47-ch1-150.event.dat
+    - ec_xray_new/47-ch2-152.event.dat
+    - ec_xray_new/47-ch3-153.event.dat
+    - ec_xray_new/47-ch0-151.event.dat
+    hk_files:
+    - ec_xray_new/47-ch0-ecu_196.hk
+    - ec_xray_new/47-ch1-ecu_195.hk
+    - ec_xray_new/47-ch2-ecu_197.hk
+    - ec_xray_new/47-ch3-ecu_198.hk
+    background_hk_files:
+    - ec_xray_new/47-ch1-ecu_195.hk
+    - ec_xray_new/47-ch2-ecu_197.hk
+    - ec_xray_new/47-ch3-ecu_198.hk
+    - ec_xray_new/47-ch0-ecu_196.hk
+    energy_keV: 47
+    fit_range: [[148.2, 345.8], [161.4, 376.6], [153.0, 357.0], [175.8, 410.2]]
+    background: lin
+    qa:
+      redchi_warn: 5.0
+      redchi_fail: 50.0
+    selection:
+      hk_bias: 28.5
+    background_selection:
+      hk_bias: 28.5
+    rotation: [1, 2, 3, 0]
+    scale:
+      mode: four_slot_coverage
+      method: event_span
+      computed_at_runtime: true
+      evidence: 2026-10-18; X_new one-step [ch1,ch2,ch3,ch0] rotation; selected event-span ratios; not live time
+    accept_residual: '2026-10-18; boundary; explicit zero-fill/truncation evidence; ec_xray_new/47-ch2-152.event.dat:
+      unrecognized_bytes=464, truncated_packets=1'
+  '49':
+    id: '49'
+    files:
+    - ec_xray_new/49-ch0-147.event.dat
+    - ec_xray_new/49-ch1-146.event.dat
+    - ec_xray_new/49-ch2-148.event.dat
+    - ec_xray_new/49-ch3-149.event.dat
+    background_files:
+    - ec_xray_new/49-ch1-146.event.dat
+    - ec_xray_new/49-ch2-148.event.dat
+    - ec_xray_new/49-ch3-149.event.dat
+    - ec_xray_new/49-ch0-147.event.dat
+    hk_files:
+    - ec_xray_new/49-ch0-ecu_192.hk
+    - ec_xray_new/49-ch1-ecu_191.hk
+    - ec_xray_new/49-ch2-ecu_193.hk
+    - ec_xray_new/49-ch3-ecu_194.hk
+    background_hk_files:
+    - ec_xray_new/49-ch1-ecu_191.hk
+    - ec_xray_new/49-ch2-ecu_193.hk
+    - ec_xray_new/49-ch3-ecu_194.hk
+    - ec_xray_new/49-ch0-ecu_192.hk
+    energy_keV: 49
+    fit_range: [[162.6, 379.4], [172.2, 401.8], [163.8, 382.2], [178.2, 415.8]]
+    background: lin
+    qa:
+      redchi_warn: 5.0
+      redchi_fail: 50.0
+    selection:
+      hk_bias: 28.5
+    background_selection:
+      hk_bias: 28.5
+    rotation: [1, 2, 3, 0]
+    scale:
+      mode: four_slot_coverage
+      method: event_span
+      computed_at_runtime: true
+      evidence: 2026-10-18; X_new one-step [ch1,ch2,ch3,ch0] rotation; selected event-span ratios; not live time
+    accept_residual: '2026-10-18; boundary; explicit zero-fill/truncation evidence; ec_xray_new/49-ch0-147.event.dat:
+      unrecognized_bytes=384, truncated_packets=2'
+  '51':
+    id: '51'
+    files:
+    - ec_xray_new/51-ch0-141.event.dat
+    - ec_xray_new/51-ch1-140.event.dat
+    - ec_xray_new/51-ch2-142.event.dat
+    - ec_xray_new/51-ch3-143.event.dat
+    background_files:
+    - ec_xray_new/51-ch1-140.event.dat
+    - ec_xray_new/51-ch2-142.event.dat
+    - ec_xray_new/51-ch3-143.event.dat
+    - ec_xray_new/51-ch0-141.event.dat
+    hk_files:
+    - ec_xray_new/51-ch0-ecu_186.hk
+    - ec_xray_new/51-ch1-ecu_185.hk
+    - ec_xray_new/51-ch2-ecu_187.hk
+    - ec_xray_new/51-ch3-ecu_188.hk
+    background_hk_files:
+    - ec_xray_new/51-ch1-ecu_185.hk
+    - ec_xray_new/51-ch2-ecu_187.hk
+    - ec_xray_new/51-ch3-ecu_188.hk
+    - ec_xray_new/51-ch0-ecu_186.hk
+    energy_keV: 51
+    fit_range: [[156.6, 365.4], [171.0, 399.0], [157.8, 368.2], [175.8, 410.2]]
+    background: lin
+    qa:
+      redchi_warn: 5.0
+      redchi_fail: 50.0
+    selection:
+      hk_bias: 28.5
+    background_selection:
+      hk_bias: 28.5
+    rotation: [1, 2, 3, 0]
+    scale:
+      mode: four_slot_coverage
+      method: event_span
+      computed_at_runtime: true
+      evidence: 2026-10-18; X_new one-step [ch1,ch2,ch3,ch0] rotation; selected event-span ratios; not live time
+    accept_residual: null
+  '55':
+    id: '55'
+    files:
+    - ec_xray_new/55-ch0-165.event.dat
+    - ec_xray_new/55-ch1-164.event.dat
+    - ec_xray_new/55-ch2-166.event.dat
+    - ec_xray_new/55-ch3-167.event.dat
+    background_files:
+    - ec_xray_new/55-ch1-164.event.dat
+    - ec_xray_new/55-ch2-166.event.dat
+    - ec_xray_new/55-ch3-167.event.dat
+    - ec_xray_new/55-ch0-165.event.dat
+    hk_files:
+    - ec_xray_new/55-ch0-ecu_210.hk
+    - ec_xray_new/55-ch1-ecu_209.hk
+    - ec_xray_new/55-ch2-ecu_211.hk
+    - ec_xray_new/55-ch3-ecu_212.hk
+    background_hk_files:
+    - ec_xray_new/55-ch1-ecu_209.hk
+    - ec_xray_new/55-ch2-ecu_211.hk
+    - ec_xray_new/55-ch3-ecu_212.hk
+    - ec_xray_new/55-ch0-ecu_210.hk
+    energy_keV: 55
+    fit_range: [[167.4, 390.6], [179.4, 418.6], [168.6, 393.4], [198.6, 463.4]]
+    background: lin
+    qa:
+      redchi_warn: 5.0
+      redchi_fail: 50.0
+    selection:
+      hk_bias: 28.5
+    background_selection:
+      hk_bias: 28.5
+    rotation: [1, 2, 3, 0]
+    scale:
+      mode: four_slot_coverage
+      method: event_span
+      computed_at_runtime: true
+      evidence: 2026-10-18; X_new one-step [ch1,ch2,ch3,ch0] rotation; selected event-span ratios; not live time
+    accept_residual: '2026-10-18; boundary; explicit zero-fill/truncation evidence; ec_xray_new/55-ch1-164.event.dat:
+      unrecognized_bytes=296, truncated_packets=1; ec_xray_new/55-ch2-166.event.dat: unrecognized_bytes=248, truncated_packets=1'
+  '60':
+    id: '60'
+    files:
+    - ec_xray_new/60-ch0-169.event.dat
+    - ec_xray_new/60-ch1-168.event.dat
+    - ec_xray_new/60-ch2-172.event.dat
+    - ec_xray_new/60-ch3-171.event.dat
+    background_files:
+    - ec_xray_new/60-ch1-168.event.dat
+    - ec_xray_new/60-ch2-172.event.dat
+    - ec_xray_new/60-ch3-171.event.dat
+    - ec_xray_new/60-ch0-169.event.dat
+    hk_files:
+    - ec_xray_new/60-ch0-ecu_214.hk
+    - ec_xray_new/60-ch1-ecu_213.hk
+    - ec_xray_new/60-ch2-ecu_217.hk
+    - ec_xray_new/60-ch3-ecu_216.hk
+    background_hk_files:
+    - ec_xray_new/60-ch1-ecu_213.hk
+    - ec_xray_new/60-ch2-ecu_217.hk
+    - ec_xray_new/60-ch3-ecu_216.hk
+    - ec_xray_new/60-ch0-ecu_214.hk
+    energy_keV: 60
+    fit_range: [[189.0, 441.0], [197.4, 460.6], [180.6, 421.4], [211.8, 494.2]]
+    background: lin
+    qa:
+      redchi_warn: 5.0
+      redchi_fail: 50.0
+    selection:
+      hk_bias: 28.5
+    background_selection:
+      hk_bias: 28.5
+    rotation: [1, 2, 3, 0]
+    scale:
+      mode: four_slot_coverage
+      method: event_span
+      computed_at_runtime: true
+      evidence: 2026-10-18; X_new one-step [ch1,ch2,ch3,ch0] rotation; selected event-span ratios; not live time
+    accept_residual: '2026-10-18; boundary; explicit zero-fill/truncation evidence; ec_xray_new/60-ch1-168.event.dat:
+      unrecognized_bytes=168, truncated_packets=1; ec_xray_new/60-ch2-172.event.dat: unrecognized_bytes=424, truncated_packets=1'
+  '65':
+    id: '65'
+    files:
+    - ec_xray_new/65-ch0-174.event.dat
+    - ec_xray_new/65-ch1-173.event.dat
+    - ec_xray_new/65-ch2-175.event.dat
+    - ec_xray_new/65-ch3-176.event.dat
+    background_files:
+    - ec_xray_new/65-ch1-173.event.dat
+    - ec_xray_new/65-ch2-175.event.dat
+    - ec_xray_new/65-ch3-176.event.dat
+    - ec_xray_new/65-ch0-174.event.dat
+    hk_files:
+    - ec_xray_new/65-ch0-ecu_219.hk
+    - ec_xray_new/65-ch1-ecu_218.hk
+    - ec_xray_new/65-ch2-ecu_220.hk
+    - ec_xray_new/65-ch3-ecu_221.hk
+    background_hk_files:
+    - ec_xray_new/65-ch1-ecu_218.hk
+    - ec_xray_new/65-ch2-ecu_220.hk
+    - ec_xray_new/65-ch3-ecu_221.hk
+    - ec_xray_new/65-ch0-ecu_219.hk
+    energy_keV: 65
+    fit_range: [[197.4, 460.6], [215.4, 502.6], [199.8, 466.2], [225.0, 525.0]]
+    background: lin
+    qa:
+      redchi_warn: 5.0
+      redchi_fail: 50.0
+    selection:
+      hk_bias: 28.5
+    background_selection:
+      hk_bias: 28.5
+    rotation: [1, 2, 3, 0]
+    scale:
+      mode: four_slot_coverage
+      method: event_span
+      computed_at_runtime: true
+      evidence: 2026-10-18; X_new one-step [ch1,ch2,ch3,ch0] rotation; selected event-span ratios; not live time
+    accept_residual: null
+  '70':
+    id: '70'
+    files:
+    - ec_xray_new/70-ch0-180.event.dat
+    - ec_xray_new/70-ch1-179.event.dat
+    - ec_xray_new/70-ch2-181.event.dat
+    - ec_xray_new/70-ch3-182.event.dat
+    background_files:
+    - ec_xray_new/70-ch1-179.event.dat
+    - ec_xray_new/70-ch2-181.event.dat
+    - ec_xray_new/70-ch3-182.event.dat
+    - ec_xray_new/70-ch0-180.event.dat
+    hk_files:
+    - ec_xray_new/70-ch0-ecu_225.hk
+    - ec_xray_new/70-ch1-ecu_224.hk
+    - ec_xray_new/70-ch2-ecu_226.hk
+    - ec_xray_new/70-ch3-ecu_227.hk
+    background_hk_files:
+    - ec_xray_new/70-ch1-ecu_224.hk
+    - ec_xray_new/70-ch2-ecu_226.hk
+    - ec_xray_new/70-ch3-ecu_227.hk
+    - ec_xray_new/70-ch0-ecu_225.hk
+    energy_keV: 70
+    fit_range: [[223.8, 522.2], [239.4, 558.6], [222.6, 519.4], [239.4, 558.6]]
+    background: lin
+    qa:
+      redchi_warn: 5.0
+      redchi_fail: 50.0
+    selection:
+      hk_bias: 28.5
+    background_selection:
+      hk_bias: 28.5
+    rotation: [1, 2, 3, 0]
+    scale:
+      mode: four_slot_coverage
+      method: event_span
+      computed_at_runtime: true
+      evidence: 2026-10-18; X_new one-step [ch1,ch2,ch3,ch0] rotation; selected event-span ratios; not live time
+    accept_residual: '2026-10-18; boundary; explicit zero-fill/truncation evidence; ec_xray_new/70-ch0-180.event.dat:
+      unrecognized_bytes=440, truncated_packets=1; ec_xray_new/70-ch1-179.event.dat: unrecognized_bytes=112, truncated_packets=1'
+  '80':
+    id: '80'
+    files:
+    - ec_xray_new/80-ch0-189.event.dat
+    - ec_xray_new/80-ch1-188.event.dat
+    - ec_xray_new/80-ch2-190.event.dat
+    - ec_xray_new/80-ch3-191.event.dat
+    background_files:
+    - ec_xray_new/80-ch1-188.event.dat
+    - ec_xray_new/80-ch2-190.event.dat
+    - ec_xray_new/80-ch3-191.event.dat
+    - ec_xray_new/80-ch0-189.event.dat
+    hk_files:
+    - ec_xray_new/80-ch0-ecu_234.hk
+    - ec_xray_new/80-ch1-ecu_233.hk
+    - ec_xray_new/80-ch2-ecu_235.hk
+    - ec_xray_new/80-ch3-ecu_236.hk
+    background_hk_files:
+    - ec_xray_new/80-ch1-ecu_233.hk
+    - ec_xray_new/80-ch2-ecu_235.hk
+    - ec_xray_new/80-ch3-ecu_236.hk
+    - ec_xray_new/80-ch0-ecu_234.hk
+    energy_keV: 80
+    fit_range: [[261.0, 609.0], [273.0, 637.0], [249.0, 581.0], [292.2, 681.8]]
+    background: lin
+    qa:
+      redchi_warn: 5.0
+      redchi_fail: 50.0
+    selection:
+      hk_bias: 28.5
+    background_selection:
+      hk_bias: 28.5
+    rotation: [1, 2, 3, 0]
+    scale:
+      mode: four_slot_coverage
+      method: event_span
+      computed_at_runtime: true
+      evidence: 2026-10-18; X_new one-step [ch1,ch2,ch3,ch0] rotation; selected event-span ratios; not live time
+    accept_residual: null
+  '90':
+    id: '90'
+    files:
+    - ec_xray_new/90-ch0-193.event.dat
+    - ec_xray_new/90-ch1-192.event.dat
+    - ec_xray_new/90-ch2-194.event.dat
+    - ec_xray_new/90-ch3-195.event.dat
+    background_files:
+    - ec_xray_new/90-ch1-192.event.dat
+    - ec_xray_new/90-ch2-194.event.dat
+    - ec_xray_new/90-ch3-195.event.dat
+    - ec_xray_new/90-ch0-193.event.dat
+    hk_files:
+    - ec_xray_new/90-ch0-ecu_238.hk
+    - ec_xray_new/90-ch1-ecu_237.hk
+    - ec_xray_new/90-ch2-ecu_239.hk
+    - ec_xray_new/90-ch3-ecu_240.hk
+    background_hk_files:
+    - ec_xray_new/90-ch1-ecu_237.hk
+    - ec_xray_new/90-ch2-ecu_239.hk
+    - ec_xray_new/90-ch3-ecu_240.hk
+    - ec_xray_new/90-ch0-ecu_238.hk
+    energy_keV: 90
+    fit_range: [[292.2, 681.8], [316.2, 737.8], [289.8, 676.2], [355.8, 830.2]]
+    background: lin
+    qa:
+      redchi_warn: 5.0
+      redchi_fail: 50.0
+    selection:
+      hk_bias: 28.5
+    background_selection:
+      hk_bias: 28.5
+    rotation: [1, 2, 3, 0]
+    scale:
+      mode: four_slot_coverage
+      method: event_span
+      computed_at_runtime: true
+      evidence: 2026-10-18; X_new one-step [ch1,ch2,ch3,ch0] rotation; selected event-span ratios; not live time
+    accept_residual: null
+excluded_xray_energies_keV: [53.0]
+exclusion_evidence: 53 keV excluded because CH3 is a weak peak; old ec_xray alias is excluded
