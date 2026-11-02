@@ -42,7 +42,7 @@ grid-workspace/
         └── ...            # 试算状态与人工修订
 ```
 
-产品按载荷和流程组织：
+以下是本库当前使用的七层格式，产品按载荷和流程组织。`cali_proc 0.5.0` 的 EXP / L0–L2 新规范及与本库的对应关系见 [新数据规范对照](cali_proc_format_20261102.md)。
 
 ```text
 products/<payload>/

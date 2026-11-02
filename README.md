@@ -126,6 +126,7 @@ pipeline.run_ec()
 | [工作台使用](workbench/README.md) | 数据目录、载荷预设、TB 依赖、试算、运行和结果复核。 |
 | [L1 谱复核](docs/l1_workbench.md) | 工况与通道切换、拟合窗口、残差和局部重算。 |
 | [处理与数据指南](docs/processing.md) | TB / EC 分层、命令行、Python API、产物与曲面模型。 |
+| [新数据规范对照](docs/cali_proc_format_20261102.md) | cali_proc 的 EXP / L0–L2 契约、载荷差异及本库适配位置。 |
 | [寻峰与质量诊断](docs/peak_finding.md) | 候选峰、背景模型、计数误差、选窗和疑似问题提示。 |
 | [读取协议](docs/packet_protocols.md) | XML、事件与 HK 包、字段和 CRC。 |
 | [原始谱读取复测](docs/readout_crc_validation.md) | 14B / 15B 读取配置、CRC 与谱尾问题。 |
