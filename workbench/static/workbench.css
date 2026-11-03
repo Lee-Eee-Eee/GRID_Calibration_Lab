@@ -96,14 +96,14 @@ input:focus, select:focus, textarea:focus { border-color: var(--blue); }
 #stage-nav { padding-top: 21px; }
 .nav-group + .nav-group { margin-top: 27px; }
 .nav-group-label { margin: 0 0 9px; padding: 0 8px; color: #384957; font-size: 12px; font-weight: 600; }
-.stage-nav-button { position: relative; width: 100%; display: flex; align-items: center; gap: 6px; border: 1px solid transparent; border-radius: 3px; padding: 10px 6px; margin: 2px 0; background: transparent; color: #354653; font-size: 13px; text-align: left; min-height: 40px; }
-.stage-nav-button > span:nth-child(2) { white-space: nowrap; }
+.stage-nav-button { position: relative; width: 100%; display: grid; grid-template-columns: 40px minmax(0, 1fr) 5px max-content; align-items: center; gap: 4px; border: 1px solid transparent; border-radius: 3px; padding: 10px 6px; margin: 2px 0; background: transparent; color: #354653; font-size: 13px; text-align: left; min-height: 40px; }
+.nav-title { min-width: 0; line-height: 1.4; overflow-wrap: anywhere; }
 .stage-nav-button:hover { background: #edf0f3; }
 .stage-nav-button.active { background: #e9eff9; color: #173f80; font-weight: 600; }
 .stage-nav-button.active::before { content: ""; position: absolute; inset: 8px auto 8px -3px; width: 3px; border-radius: 1px; background: var(--blue); }
-.nav-layer { min-width: 22px; color: var(--secondary); font: 12px/1.5 Consolas, monospace; }
+.nav-layer { min-width: 0; white-space: nowrap; flex: 0 0 auto; color: var(--secondary); font: 11px/1.5 Consolas, monospace; }
 .active .nav-layer { color: var(--blue); }
-.nav-status { width: 5px; height: 5px; border-radius: 50%; background: #a6afb7; flex: 0 0 auto; margin-left: auto; }
+.nav-status { width: 5px; height: 5px; border-radius: 50%; background: #a6afb7; flex: 0 0 auto; }
 .nav-status.succeeded { background: #4a7e5c; }
 .nav-status.failed { background: var(--red); }
 .nav-status.running, .nav-status.queued { background: var(--blue); animation: pulse 1.5s infinite; }
@@ -326,7 +326,7 @@ dialog input, dialog select { width: 100%; font-size: 14px; }
   main { padding: 14px 16px 10px; }
   .topbar { padding: 0 16px; }
   .sidebar { padding-left: 10px; padding-right: 10px; }
-  .stage-nav-button { padding-left: 6px; padding-right: 6px; gap: 5px; }
+  .stage-nav-button { padding-left: 6px; padding-right: 6px; gap: 3px; font-size: 12px; }
   .nav-status-text { font-size: 12px; }
   .nav-layer { min-width: 20px; }
   .stage-title h2 { font-size: 16px; }
@@ -343,6 +343,7 @@ dialog input, dialog select { width: 100%; font-size: 14px; }
 @media (max-width: 980px) {
   :root { --sidebar-width: 180px; }
   .nav-status { display: none; }
+  .stage-nav-button { grid-template-columns: 40px minmax(0, 1fr) max-content; }
   .nav-status-text { margin-left: auto; }
   .sidebar { padding-left: 8px; padding-right: 8px; }
   .stage-title-row { align-items: flex-start; flex-direction: column; gap: 10px; }
@@ -373,7 +374,7 @@ dialog input, dialog select { width: 100%; font-size: 14px; }
   .nav-group { display: flex; align-items: center; gap: 2px; flex: 0 0 auto; }
   .nav-group + .nav-group { margin: 0; }
   .nav-group-label { padding: 0; margin: 0 7px 0 0; font-size: 12px; }
-  .stage-nav-button { width: auto; padding: 8px; min-height: 39px; margin: 0; border-radius: 0; font-size: 12px; }
+  .stage-nav-button { display: flex; width: auto; padding: 8px; min-height: 39px; margin: 0; border-radius: 0; font-size: 12px; }
   .stage-nav-button.active::before { inset: auto 6px -1px; width: auto; height: 2px; }
   .nav-status, .nav-status-text { display: none; }
   .nav-layer { min-width: auto; }

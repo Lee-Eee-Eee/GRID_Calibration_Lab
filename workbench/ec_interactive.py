@@ -247,15 +247,31 @@ class ECInspector:
         resolution_curve = {"x": [], "y": []}
         numeric = [row for row in rows if row["quality_pass"]]
         if numeric and (coefficients or native_model and (params or {}).get("EC_high")):
-            adc = np.linspace(min(row["center"] for row in numeric), max(row["center"] for row in numeric), 250)
             if native_model:
-                lower = np.polyval(coefficients, adc) if coefficients else np.full_like(adc, np.nan)
-                higher = params.get("EC_high")
-                upper = np.polyval(higher, adc) if higher else np.full_like(adc, np.nan)
-                curve = {"x": adc, "y": [float(lo) if np.isfinite(lo) and lo < split else
-                                          float(hi) if np.isfinite(hi) and hi >= split_high else None
-                                          for lo, hi in zip(lower, upper, strict=True)]}
+                # The low-energy polynomial can turn back below the split when
+                # extrapolated thousands of ADC beyond its fitted observations.
+                # Each model owns its observed ADC support; predicted energy is
+                # never a selector between the two polynomials.
+                segments = []
+                for band in ("low", "high"):
+                    support = [row["center"] for row in kept if
+                               (row["E"] < split if band == "low" else row["E"] >= split_high)]
+                    band_coefficients = (params or {}).get(f"EC_{band}")
+                    if len(set(support)) < 2 or not band_coefficients:
+                        continue
+                    lo, hi = min(support), max(support)
+                    adc = np.geomspace(lo, hi, 250) if lo > 0 else np.linspace(lo, hi, 250)
+                    segments.append({"band": band, "x": adc.tolist(),
+                                     "y": np.polyval(band_coefficients, adc).tolist()})
+                curve = {"x": [], "y": [], "segments": segments}
+                for segment in segments:
+                    if curve["x"]:
+                        curve["x"].append(None)
+                        curve["y"].append(None)
+                    curve["x"].extend(segment["x"])
+                    curve["y"].extend(segment["y"])
             else:
+                adc = np.linspace(min(row["center"] for row in numeric), max(row["center"] for row in numeric), 250)
                 curve = {"x": adc, "y": np.polyval(coefficients, adc)}
         if numeric and params:
             energies = np.geomspace(
@@ -277,6 +293,7 @@ class ECInspector:
                 "curve": curve,
                 "resolution_curve": resolution_curve,
                 "energy_split": split,
+                "energy_split_high": split_high,
                 "diagnostics": {
                     "n_points": len(rows),
                     "n_used": len(kept_ids),

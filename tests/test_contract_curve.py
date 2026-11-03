@@ -109,7 +109,7 @@ def test_partial_ec_overview_renders_available_band_only(tmp_path, band, expecte
     params = {"EC_low": None, "EC_high": None}
     params[f"EC_{band}"] = [0., .2, 0.]
     write_json(root / "14B/ec/L3/json/2611021234_14B_EC.l3.json", {
-        "analysis_contract": "cali_proc@0.5", "energy_split": 51., "energy_split_high": 55.,
+        "analysis_contract": "cali_proc@0.5", "energy_split": 51., "energy_split_high": 75.,
         "calibration_params": {"0": params},
     })
     points = [dict(peak(E=energy), id=f"point-{energy}", quality_pass=True)
@@ -118,11 +118,58 @@ def test_partial_ec_overview_renders_available_band_only(tmp_path, band, expecte
         row["center"] = row["E"] / .2
     view = ECInspector(ComputeAdapter(tmp_path)).overview("14B", root, 0, points=points)
     assert [row["E"] for row in view["points"] if row["used"]] == expected_used
+    assert view["energy_split_high"] == 75.
     assert view["diagnostics"]["n_used"] == len(expected_used)
     assert len(view["curve"]["x"]) == 250
     assert any(value is not None for value in view["curve"]["y"])
     assert all(row["predicted_energy"] is None for row in view["points"] if row["E"] not in expected_used)
-    assert any(value is None for value in view["curve"]["y"])
+    assert all(value is not None for value in view["curve"]["y"])
+    assert [segment["band"] for segment in view["curve"]["segments"]] == [band]
+    assert view["curve"]["x"][0] == min(expected_used) / .2
+    assert view["curve"]["x"][-1] == max(expected_used) / .2
+
+
+def test_native_ec_curve_never_reenters_low_energy_polynomial_at_high_adc(tmp_path):
+    # Coefficients and observation endpoints from the saved 14B server run.
+    # Its low polynomial falls to 2.68 keV at the final high-energy ADC value;
+    # choosing a band by its predicted energy drew the false vertical tail.
+    params = {
+        "EC_low": [-2.2776709050921455e-05, .1748298450475885, 4.178292070750394],
+        "EC_high": [-2.641377846003503e-07, .1744770344975735, 6.233783171360028],
+    }
+    root = tmp_path / "products"
+    write_json(root / "14B/ec/L3/json/2611021234_14B_EC.l3.json", {
+        "analysis_contract": "cali_proc@0.5", "energy_split": 51., "energy_split_high": 55.,
+        "calibration_params": {"0": params},
+    })
+    values = [(15., 79.41793498481704), (49., 264.48975034911064),
+              (52., 267.), (55., 280.3650489604722), (1332.492, 7684.39632830319)]
+    points = [dict(peak(E=energy, center=center), id=f"point-{energy}", quality_pass=True)
+              for energy, center in values]
+    points.append(dict(peak(E=2000., center=200_000.), id="excluded-tail", quality_pass=True))
+    write_json(root / "14B/ec/L3/json/L3_manifest.json", {"excluded_points": ["excluded-tail"]})
+    view = ECInspector(ComputeAdapter(tmp_path)).overview("14B", root, 0, points=points)
+    low, high = view["curve"]["segments"]
+    assert low["band"] == "low" and high["band"] == "high"
+    assert low["x"][-1] == values[1][1]
+    assert high["x"][0] == values[3][1]
+    assert high["x"][-1] == values[4][1]
+    np.testing.assert_allclose(high["y"], np.polyval(params["EC_high"], high["x"]), rtol=1e-14)
+    assert high["y"][-1] > 1300
+    assert np.all(np.diff(high["y"]) > 0)
+    assert view["curve"]["x"].count(None) == view["curve"]["y"].count(None) == 1
+    assert view["curve"]["y"][250] is None
+
+
+def test_native_ec_curve_needs_two_distinct_used_adc_values(tmp_path):
+    root = tmp_path / "products"
+    write_json(root / "14B/ec/L3/json/2611021234_14B_EC.l3.json", {
+        "analysis_contract": "cali_proc@0.5", "energy_split": 51., "energy_split_high": 55.,
+        "calibration_params": {"0": {"EC_low": [0., .2, 0.], "EC_high": None}},
+    })
+    points = [dict(peak(E=20., center=100.), id="one", quality_pass=True)]
+    view = ECInspector(ComputeAdapter(tmp_path)).overview("14B", root, 0, points=points)
+    assert view["curve"] == {"x": [], "y": [], "segments": []}
 
 
 def test_prepared_cache_separates_native_density_from_legacy_bin_rate(tmp_path):

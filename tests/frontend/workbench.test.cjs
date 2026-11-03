@@ -1586,6 +1586,52 @@ test('native contract relabels EC steps while preserving legacy run identities',
   assert.match(ui.run('activeLayer().process'),/ODR/);
 });
 
+test('EC calibration defaults to log axes and preserves segment gaps and signed residuals when toggled', async () => {
+  const ui=controller();
+  ui.run(`state.layer='EC_L3';state.point={id:'low',center:200,E:40};
+    state.ecOverview={points:[{id:'low',center:200,E:40,residual_percent:-.5,used:true},
+                             {id:'high',center:7684,E:1332.492,residual_percent:.1,used:true}],
+      curve:{x:[200,250,null,2900,7684],y:[40,50,null,511,1332.492]}};
+    $('ec-detail-mode').value='residual';renderEcParams=()=>{};
+    let calibrationPlots=[];Plotly={react:async(chart,traces,layout)=>calibrationPlots.push({chart:chart.id,traces,layout})};`);
+  await ui.run('renderEcOverview()');
+  const plotted=JSON.parse(ui.run('JSON.stringify(calibrationPlots)'));
+  assert.equal(plotted[0].layout.xaxis.type,'log');
+  assert.equal(plotted[0].layout.yaxis.type,'log');
+  assert.equal(plotted[0].traces[0].connectgaps,false);
+  assert.equal(plotted[0].traces[0].y[2],null);
+  assert.deepEqual(plotted[0].traces[1].customdata,['low','high']);
+  assert.equal(plotted[1].layout.xaxis.type,'log');
+  assert.equal(plotted[1].layout.yaxis.type,'linear');
+  assert.deepEqual(plotted[1].traces[0].y,[-.5,.1]);
+  ui.element('ec-axis-scale').value='linear';
+  await ui.element('ec-axis-scale').listeners.change[0]();
+  const linear=JSON.parse(ui.run('JSON.stringify(calibrationPlots[2])'));
+  assert.equal(linear.layout.xaxis.type,'linear');
+  assert.equal(linear.layout.yaxis.type,'linear');
+  assert.notEqual(linear.layout.uirevision,plotted[0].layout.uirevision);
+  assert.deepEqual(linear.traces,plotted[0].traces);
+  assert.equal(ui.run('localStorage.getItem("grid-workbench-ec-scale")'),'linear');
+});
+
+test('native EC residuals use their energy band and never replace an unavailable prediction', async () => {
+  const ui=controller();
+  ui.run(`state.layer='EC_L3';state.run.analysis_contract='cali_proc@0.5';
+    state.ecOverview={energy_split:51,energy_split_high:55,
+      params:{EC_low:[-2.2776709050921455e-5,.1748298450475885,4.178292070750394],
+              EC_high:[-2.641377846003503e-7,.1744770344975735,6.233783171360028]},
+      points:[{id:'high',E:1332.492,center:7684.39632830319,predicted_energy:1331.3871442747684}]};
+    $('ec-detail-mode').value='residual';renderEcParams=()=>{};
+    let residualPlots=[];Plotly={react:async(chart,traces,layout)=>residualPlots.push({traces,layout})};`);
+  assert.ok(Math.abs(ui.run('ecPrediction({E:1332.492,center:7684.39632830319})')-1331.3871442747684)<1e-7);
+  assert.equal(ui.run('ecPrediction({E:52,center:270})'),null);
+  assert.equal(ui.run('ecPrediction({E:1332.492,center:7684.39632830319,predicted_energy:null})'),null);
+  await ui.run('renderEcOverview()');
+  const residual=JSON.parse(ui.run('JSON.stringify(residualPlots[1].traces[0].y)'))[0];
+  assert.ok(Math.abs(residual)<.1);
+  assert.ok(residual<0);
+});
+
 test('native xray workflow schedules the next acquisition slot as the same-channel background', () => {
   const ui=controller();
   ui.run(`state.run.analysis_contract='cali_proc@0.5';state.run.inventory={raw:{reading_preview:{rows:[

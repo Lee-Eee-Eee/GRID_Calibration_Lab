@@ -205,7 +205,8 @@ function renderNavigation() {
     for (const layer of layers.filter((item) => item.id.startsWith(family))) {
       const button = node("button", `stage-nav-button${state.layer === layer.id ? " active" : ""}`);
       button.type = "button"; button.dataset.layer = layer.id; button.setAttribute("aria-current", state.layer === layer.id ? "step" : "false");
-      button.append(node("span", "nav-layer", (nativeContract() ? (["TB_L0","EC_L0"].includes(layer.id) ? "EXP/L0" : layerDisplay(layer.id).split(" ").pop()) : layer.id.slice(-2))), node("span", "", nativeContract() && layer.id === "EC_L3" ? "能量关系与分辨率" : layer.title));
+      const label = nativeContract() && ["TB_L0","EC_L0"].includes(layer.id) ? "原始解析" : layer.title;
+      button.append(node("span", "nav-layer", (nativeContract() ? (["TB_L0","EC_L0"].includes(layer.id) ? "EXP/L0" : layerDisplay(layer.id).split(" ").pop()) : layer.id.slice(-2))), node("span", "nav-title", label));
       const stage = state.run?.stages?.[layer.id];
       const navStatus = stage?.stale && normalizedStatus(stage?.status) === "succeeded" ? "stale" : normalizedStatus(stage?.status);
       const coverage = stage?.acquisition_coverage, partial = coverage?.completed > 0 && coverage.completed < coverage.required && !["running","queued","failed"].includes(navStatus);
@@ -1566,6 +1567,7 @@ function configureLayerPanels() {
   $("inspector-title").textContent = isUnpackLayer() ? "解包结果详情" : ec ? raw ? "数据文件详情" : "能峰复核" : l1 ? "拟合详情" : "工况能谱";
   $("point-field-label").textContent = ec ? raw ? "数据文件" : "能线 / 源峰" : "工况文件";
   $("surface-mode").hidden = state.layer !== "TB_L2";
+  $("ec-axis-scale").hidden = state.layer !== "EC_L3";
   $("ec-detail-mode").hidden = state.layer !== "EC_L3";
   $("spectrum-chart").hidden = raw || review;
   $("dependency-toolbar").hidden = !ec || state.layer === "EC_L0";
@@ -1674,7 +1676,19 @@ async function loadEcAnalysis() {
 
 function bindEcClicks(chart) { if (typeof chart.removeAllListeners === "function") chart.removeAllListeners("plotly_click"); chart.on("plotly_click", (event) => { const id = event.points.find((p) => p.customdata)?.customdata; const point = state.ecOverview?.points?.find((p) => p.id === id); if (point) selectEcPoint(point).catch(messageError); }); }
 
-function ecPrediction(p) { const coef = state.ecOverview?.params?.EC_low || state.ecOverview?.params?.EC_high || state.ecOverview?.calibration?.EC_low; return Array.isArray(coef) && coef.length === 3 ? coef[0] * p.center * p.center + coef[1] * p.center + coef[2] : null; }
+function ecPrediction(p) {
+  if (Object.prototype.hasOwnProperty.call(p, "predicted_energy"))
+    return Number.isFinite(p.predicted_energy) ? p.predicted_energy : null;
+  const data = state.ecOverview || {}, params = data.params || data.calibration || {};
+  let coef;
+  if (nativeContract()) {
+    const low = data.energy_split ?? 51, high = data.energy_split_high ?? 55;
+    coef = p.E < low ? params.EC_low : p.E >= high ? params.EC_high : null;
+  } else coef = params.EC_low || params.EC_high;
+  if (!Number.isFinite(p.center) || !Array.isArray(coef) || coef.length !== 3 || !coef.every(Number.isFinite)) return null;
+  const energy = coef[0] * p.center * p.center + coef[1] * p.center + coef[2];
+  return Number.isFinite(energy) ? energy : null;
+}
 function ecPointStatus(point) {
   if (isExcluded(point)) return "人工屏蔽";
   if (point.fit_status === "model_pending" || point.unsupported_spectral_model) return "模型待定";
@@ -1690,16 +1704,17 @@ async function renderEcOverview() {
   if (state.layer === "EC_L2") { renderEcReviewFiles(); return; }
   $("residual-chart").classList.remove("metadata-chart");
   const traces = [];
-  if (l3 && data.curve?.x?.length) traces.push({ type: "scatter", mode: "lines", x: data.curve.x, y: data.curve.y, line: { color: chartColors.fit, width: 1.8 }, name: "E = f(ADC)", hoverinfo: "skip" });
+  const scale = $("ec-axis-scale").value === "linear" ? "linear" : "log";
+  if (l3 && data.curve?.x?.length) traces.push({ type: "scatter", mode: "lines", x: data.curve.x, y: data.curve.y, connectgaps: false, line: { color: chartColors.fit, width: 1.8 }, name: "E = f(ADC)", hoverinfo: "skip" });
   const x = (p) => l3 ? p.center : p.E, y = (p) => l3 ? p.E : p.center;
   traces.push({ type: "scatter", mode: "markers", x: points.map(x), y: points.map(y), error_y: l3 ? undefined : { type: "data", array: points.map((p) => p.center_err || 0), visible: true, thickness: 1, color: "#6888b1" }, customdata: points.map((p) => p.id), text: points.map((p) => `${p.stem}<br>${number(p.E, 3)} keV · ${ecPointStatus(p)}`), marker: { color: points.map((p) => isExcluded(p) ? chartColors.excluded : pointUsage(p) === false ? chartColors.muted : chartColors.blue), symbol: points.map((p) => isExcluded(p) ? "x" : "circle"), size: 8, line: { color: "#fff", width: .8 } }, name: "真实能峰", hovertemplate: "%{text}<br>横坐标 %{x:.3f}<br>纵坐标 %{y:.3f}<extra></extra>" });
   if (state.point && points.some((p) => p.id === state.point.id)) traces.push({ type: "scatter", mode: "markers", x: [x(state.point)], y: [y(state.point)], customdata: [state.point.id], marker: { size: 13, color: "rgba(0,0,0,0)", line: { color: chartColors.fit, width: 2 } }, hoverinfo: "skip", name: "当前选中" });
-  await Plotly.react(plotTarget($("surface-chart")), traces, basicPlotLayout(l3 ? "校正峰位 / ADC" : "已知能量 / keV", l3 ? "能量 / keV" : "校正峰位 / ADC", { uirevision: `${state.run.id}-${state.layer}-${state.channel}` }), plotConfig); if (context !== plotContext()) return; bindEcClicks($("surface-chart"));
+  await Plotly.react(plotTarget($("surface-chart")), traces, basicPlotLayout(l3 ? "校正峰位 / ADC" : "已知能量 / keV", l3 ? "能量 / keV" : "校正峰位 / ADC", { uirevision: `${state.run.id}-${state.layer}-${state.channel}-${scale}`, xaxis: { ...axisStyle, type: scale, title: { text: "校正峰位 / ADC", standoff: 7 }, exponentformat: "power" }, yaxis: { ...axisStyle, type: scale, title: { text: "能量 / keV", standoff: 7 }, exponentformat: "power" } }), plotConfig); if (context !== plotContext()) return; bindEcClicks($("surface-chart"));
   if (context !== plotContext()) return;
   const showResidual = l3 && $("ec-detail-mode").value === "residual";
   const secondary = [{ type: "scatter", mode: "markers", x: points.map((p) => p.E), y: points.map((p) => showResidual ? p.residual_percent ?? (ecPrediction(p) === null ? null : 100 * (ecPrediction(p) - p.E) / p.E) : p.resolution), customdata: points.map((p) => p.id), text: points.map((p) => `${p.stem} · ${number(p.E, 3)} keV<br>${ecPointStatus(p)}`), marker: { color: points.map((p) => isExcluded(p) ? chartColors.excluded : pointUsage(p) === false ? chartColors.muted : chartColors.blue), symbol: points.map((p) => isExcluded(p) ? "x" : "circle"), size: 7 }, hovertemplate: "%{text}<br>%{y:.4f}%<extra></extra>" }];
   if (!showResidual && data.resolution_curve?.x?.length) secondary.unshift({ type: "scatter", mode: "lines", x: data.resolution_curve.x, y: data.resolution_curve.y, line: { color: chartColors.fit, width: 1.6 }, hoverinfo: "skip" });
-  await Plotly.react(plotTarget($("residual-chart")), secondary, basicPlotLayout("能量 / keV", showResidual ? "能量残差 / %" : "分辨率 / %", { margin: { l: 65, r: 25, t: 10, b: 42 }, yaxis: { ...axisStyle, title: { text: showResidual ? "能量残差 / %" : "分辨率 / %" }, zeroline: true, zerolinecolor: "#9daab6" } }), plotConfig); if (context !== plotContext()) return; bindEcClicks($("residual-chart"));
+  await Plotly.react(plotTarget($("residual-chart")), secondary, basicPlotLayout("能量 / keV", showResidual ? "能量残差 / %" : "分辨率 / %", { margin: { l: 65, r: 25, t: 10, b: 42 }, uirevision: `${state.run.id}-${state.layer}-${state.channel}-${scale}-${showResidual}`, xaxis: { ...axisStyle, type: scale, title: { text: "能量 / keV", standoff: 7 }, exponentformat: "power" }, yaxis: { ...axisStyle, type: "linear", title: { text: showResidual ? "能量残差 / %" : "分辨率 / %" }, zeroline: true, zerolinecolor: "#9daab6" } }), plotConfig); if (context !== plotContext()) return; bindEcClicks($("residual-chart"));
   if (context !== plotContext()) return;
   $("surface-caption").textContent = "";
   $("point-count").textContent = `${points.filter(isUsed).length} / ${points.length} 参与 L3`;
@@ -2236,6 +2251,11 @@ $("tab-jobs").addEventListener("click", () => showTab("jobs"));
 $("dismiss-message")?.addEventListener("click", () => { $("message").hidden = true; $("dismiss-message").hidden = true; });
 $("surface-mode").addEventListener("change", handleError(async (event) => { state.surfaceMode = event.target.value; await renderTBSurface(); await highlightSelectedPoint(); }));
 $("ec-detail-mode").addEventListener("change", handleError(renderEcOverview));
+$("ec-axis-scale").value = localStorage.getItem("grid-workbench-ec-scale") === "linear" ? "linear" : "log";
+$("ec-axis-scale").addEventListener("change", handleError(async () => {
+  localStorage.setItem("grid-workbench-ec-scale", $("ec-axis-scale").value);
+  await renderEcOverview();
+}));
 $("dataset-select").addEventListener("change", updateSelectedDataset);
 $("scan-datasets").addEventListener("click", () => scanDatasets().catch(datasetError));
 for (const id of ["dataset-raw-dir", "dataset-product-dir"]) $(id).addEventListener("input", datasetPathsChanged);
