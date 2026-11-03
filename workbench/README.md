@@ -1,5 +1,7 @@
 # GRID Calibration Workbench
 
+成员教程见 [GRID Calibration Lab Wiki](https://github.com/Lee-Eee-Eee/GRID_Calibration_Lab/wiki)，按服务器连接、数据与预设、TB、EC 和结果复核顺序说明完整操作。
+
 工作台提供 TB / EC 分层处理、能谱复核和标定参数比较，直接调用库内七个处理器。界面使用本地 Plotly 资源，浏览器连接本机服务。
 
 ## 启动与操作

@@ -2,7 +2,7 @@
   <img src="docs/images/grid-logo.svg" width="144" alt="天格计划 GRID">
 </p>
 
-<h1 align="center">GRID Calibration</h1>
+<h1 align="center">GRID Calibration Lab</h1>
 
 <p align="center">天格探测器地面标定与交互复核</p>
 
@@ -12,6 +12,7 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/Lee-Eee-Eee/GRID_Calibration_Lab/wiki">使用教程 Wiki</a> ·
   <a href="#快速开始">快速开始</a> ·
   <a href="#工作台">工作台</a> ·
   <a href="#处理流程">处理流程</a> ·
@@ -21,9 +22,11 @@
 
 从原始事件和遥测数据生成温度—偏压校正与能量标定参数。把分层计算、三维曲面、原谱和拟合窗口放在同一工作台中：发现异常点后，可以直接查看原谱、调整窗口、局部重算，再比较结果。
 
+成员使用请从 [Wiki 教程](https://github.com/Lee-Eee-Eee/GRID_Calibration_Lab/wiki)开始：服务器安装与 SSH 转发、数据与预设、TB / EC 逐层操作、多峰配置、结果保存和问题处理。教程正文也随代码保存在 [docs/wiki](docs/wiki/README.md)。
+
 14B / 15B 已接入 `cali_proc 0.5` 的文件表和四份分析配置。服务器计算与本地界面转发见 [GRID 部署](docs/server_workbench.md)，真实数据验证见 [适配验收](docs/contract_migration_validation.md)。
 
-15B Co60 的 1173.228 / 1332.492 keV 双峰已保存为配置 v2，原版保留比较；[双峰复核](docs/co60_doublet_validation.md)记录谱拟合和 EC 残差。服务器数据目录可直接关联个人试算、配置版本和产品索引。
+15B Co60 的 1173.228 / 1332.492 keV 双峰已在开发工作区保存为配置 v2，原版保留比较；[双峰复核](docs/co60_doublet_validation.md)记录谱拟合和 EC 残差。新成员按 [EC 教程](https://github.com/Lee-Eee-Eee/GRID_Calibration_Lab/wiki/EC-Calibration#15b-co60-联合双峰)建立自己的双峰预设版本。服务器数据目录可直接关联个人试算、配置版本和产品索引。
 
 ![TB 三维曲面与原谱联动](docs/images/tb-surface.jpg)
 
@@ -59,10 +62,14 @@
 
 ## 快速开始
 
+**成员在服务器使用：** 按 [安装与连接](https://github.com/Lee-Eee-Eee/GRID_Calibration_Lab/wiki/Server-Setup)在个人目录安装，关联共享数据并启动服务，再通过 SSH 转发在自己的浏览器操作。
+
+**在本机开发或独立使用：**
+
 需要 Python 3.10 及以上和 [uv](https://docs.astral.sh/uv/getting-started/installation/)。下面使用 Python 3.11；Node.js 只用于前端测试。
 
 ```powershell
-git clone https://github.com/Lee-Eee-Eee/GRID_Calibration_Lib.git calibration_lib
+git clone --branch feat/calibration-workbench https://github.com/Lee-Eee-Eee/GRID_Calibration_Lab.git calibration_lib
 cd calibration_lib
 uv sync --python 3.11 --extra workbench
 New-Item -ItemType Directory -Force ../grid-workspace | Out-Null
@@ -127,6 +134,7 @@ pipeline.run_ec()
 
 | 文档 | 内容 |
 | --- | --- |
+| [成员使用 Wiki](https://github.com/Lee-Eee-Eee/GRID_Calibration_Lab/wiki) | 从服务器安装到 TB / EC 标定、预设、多峰和结果复核的完整教程。 |
 | [工作台使用](workbench/README.md) | 数据目录、载荷预设、TB 依赖、试算、运行和结果复核。 |
 | [L1 谱复核](docs/l1_workbench.md) | 工况与通道切换、拟合窗口、残差和局部重算。 |
 | [处理与数据指南](docs/processing.md) | TB / EC 分层、命令行、Python API、产物与曲面模型。 |
@@ -152,4 +160,4 @@ uv run --extra workbench --extra dev pytest tests -q
 node --test tests/frontend/*.test.cjs
 ```
 
-问题和改进建议可通过 [Issues](https://github.com/Lee-Eee-Eee/GRID_Calibration_Lib/issues) 反馈。
+问题和改进建议可通过 [Issues](https://github.com/Lee-Eee-Eee/GRID_Calibration_Lab/issues) 反馈。
