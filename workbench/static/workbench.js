@@ -446,24 +446,39 @@ async function api(path, options = {}) {
   return result;
 }
 
+function navigationIndicator(stage = {}, hasTask = !!state.run) {
+  if (!hasTask) return { tone: "idle", label: "尚未选择任务" };
+  const status = normalizedStatus(stage.status);
+  if (["running", "queued"].includes(status)) return { tone: status, label: statusNames[status] };
+  if (status === "failed") return { tone: "failed", label: "计算失败" };
+  const coverage = stage.acquisition_coverage;
+  if (status === "partial" || coverage?.completed > 0 && coverage.completed < coverage.required) {
+    return { tone: "partial", label: coverage?.required ? `部分计算，已处理 ${coverage.completed} / ${coverage.required}` : "部分计算" };
+  }
+  if (status === "succeeded") return stage.stale
+    ? { tone: "stale", label: "已计算，待更新" }
+    : { tone: "computed", label: "已计算" };
+  const hasResults = Number(stage.current_count) > 0 || Number(stage.history_count) > 0;
+  return hasResults ? { tone: "available", label: stage.stale ? "未运行，有结果，输入待更新" : "未运行，有结果" }
+    : { tone: "empty", label: "未运行，无结果" };
+}
+
 function renderNavigation() {
   const nav = clear($("stage-nav"));
   for (const family of ["TB", "EC"]) {
     const group = node("div", "nav-group");
-    group.append(node("h2", "nav-group-label", family === "TB" ? "TB · 温度–偏压" : "EC · 能量标定"));
+    const heading = node("h2", "nav-group-label");
+    heading.append(node("span", "nav-family-code", family), node("span", "nav-family-name", family === "TB" ? "温度–偏压" : "能量标定"));
+    group.append(heading);
     for (const layer of layers.filter((item) => item.id.startsWith(family))) {
       const button = node("button", `stage-nav-button${state.layer === layer.id ? " active" : ""}`);
       button.type = "button"; button.dataset.layer = layer.id; button.setAttribute("aria-current", state.layer === layer.id ? "step" : "false");
       const label = nativeContract() && ["TB_L0","EC_L0"].includes(layer.id) ? "原始解析" : layer.title;
       button.append(node("span", "nav-layer", (nativeContract() ? (["TB_L0","EC_L0"].includes(layer.id) ? "EXP/L0" : layerDisplay(layer.id).split(" ").pop()) : layer.id.slice(-2))), node("span", "nav-title", label));
-      const stage = state.run?.stages?.[layer.id];
-      const navStatus = stage?.stale && normalizedStatus(stage?.status) === "succeeded" ? "stale" : normalizedStatus(stage?.status);
-      const coverage = stage?.acquisition_coverage, partial = coverage?.completed > 0 && coverage.completed < coverage.required && !["running","queued","failed"].includes(navStatus);
-      const statusLabel = partial ? `已处理 ${coverage.completed} / ${coverage.required}` : statusNames[navStatus] || "未运行";
-      button.title = `${layerDisplay(layer.id)} · ${layer.title} · ${statusLabel}`;
-      button.setAttribute("aria-label", `${layerDisplay(layer.id)} ${layer.title}，状态：${statusLabel}`);
-      const dot = node("span", `nav-status ${partial ? "succeeded" : navStatus}`); dot.title = statusLabel; dot.setAttribute("aria-hidden", "true"); button.append(dot);
-      if (state.run) { const shortStatus = { succeeded: "已计算", partial: "部分完成", failed: "失败", stale: "待更新", running: "运行中", queued: "排队中" }; button.append(node("span", "nav-status-text", partial ? `${coverage.completed}/${coverage.required}` : shortStatus[navStatus] || "未运行")); }
+      const indicator = navigationIndicator(state.run?.stages?.[layer.id]);
+      button.title = `${layerDisplay(layer.id)} · ${layer.title} · ${indicator.label}`;
+      button.setAttribute("aria-label", `${layerDisplay(layer.id)} ${layer.title}，状态：${indicator.label}`);
+      const dot = node("span", `nav-status ${indicator.tone}`); dot.title = indicator.label; dot.setAttribute("aria-hidden", "true"); button.append(dot);
       button.addEventListener("click", handleError(() => selectLayer(layer.id))); group.append(button);
     }
     nav.append(group);
@@ -581,22 +596,7 @@ function renderDependencies() {
   const unavailable = state.run.stages?.[state.layer]?.unavailable_reason;
   if (unavailable) { banner.hidden = false; banner.textContent = unavailable; }
   else if (state.layer === "EC_L0") banner.hidden = true;
-  const coverage = state.run.ec_coverage;
-  const details = $("ec-coverage-details"); details.hidden = !ecLayer || !coverage?.sources?.length;
-  const holder = clear($("ec-coverage-list"));
-  if (coverage?.sources?.length) {
-    const table = node("table"); const head = node("tr");
-    ["能峰文件", "来源", "TB 参数 / 版本", "SHA-256"].forEach((label) => head.append(node("th", "", label))); table.append(head);
-    for (const source of coverage.sources) {
-      const row = node("tr"); const filename = String(source.file).split("/").pop();
-      const nameCell = node("td", "", filename); nameCell.title = source.file;
-      const origin = node("td"); origin.append(badge(source.current_tb ? "succeeded" : "stale", source.current_tb ? "当前 TB" : source.origin === "computed" ? "旧 TB" : "历史能峰"));
-      const versionCell = node("td", "", source.provenance?.tb_version ? versionText(source.provenance.tb_version) : "历史记录未绑定本次 TB");
-      const hashCell = node("td", "", source.sha256?.slice(0, 10) || "—"); hashCell.title = source.sha256 || "";
-      row.append(nameCell, origin, versionCell, hashCell); table.append(row);
-    }
-    holder.append(table);
-  }
+
 }
 
 function renderRun() {
@@ -2555,7 +2555,6 @@ $("choose-directory").addEventListener("click", handleError(async () => { if (!d
 $("apply-tb-version").addEventListener("click", handleError(applyTbVersion));
 $("tb-version-select").addEventListener("change", () => { const selected = state.tbVersions.find((v) => v.id === $("tb-version-select").value); $("tb-binding-state").textContent = selected && !selected.selected ? "待应用" : ""; });
 $("import-tb-version").addEventListener("click", handleError(async () => { const path = $("tb-import-path").value.trim(); if (!path) throw new Error("请填写 TB L2 JSON 的完整路径。"); if (state.dirty) await saveRevision({}, true); const result = await api(runPath("/dependency"), { method: "PATCH", body: { path } }); state.run = result.run || result; $("tb-import-path").value = ""; renderRun(); await loadSurfaceSafely(); notify("TB 参数已载入，可运行 EC L1。", "success"); }));
-$("tb-analysis").after($("ec-coverage-details"));
 for (const view of ["residual", "comparison"]) {
   $("analysis-tab-" + view)?.addEventListener("click", () => showAnalysisView(view));
   $("analysis-tab-" + view)?.addEventListener("keydown", (event) => { if (["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) { event.preventDefault(); const next = event.key === "Home" ? "residual" : event.key === "End" ? "comparison" : state.analysisView === "residual" ? "comparison" : "residual"; showAnalysisView(next); $("analysis-tab-" + next)?.focus(); } });

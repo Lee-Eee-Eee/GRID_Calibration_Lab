@@ -128,6 +128,6 @@ source:
 
 在 corr 的 **TB L2 输入选择框** 中选择新包，核对更新范围后点击 **应用并更新**；若只点“应用”，稍后点击 **更新受影响层**，或依次运行 **corr → L1 → L2**。需要全量刻度时，确认范围覆盖所需全部观测和物理通道。已选的读取预设不会因此自动换成别的版本。
 
-展开 **能峰文件的 TB 依赖与来源** 或谱区的 **谱文件与 TB 依赖溯源**，可查看各源、本底和峰结果使用的 TB 文件。读取来源不完整或上下游尚未更新时，任务会指出需要先运行哪一步。
+顶部 **TB 校正参数** 显示选定版本；谱区的 **谱文件与 TB 依赖溯源** 可查看当前源谱和本底实际使用的 TB 文件。读取来源不完整或上下游尚未更新时，任务会指出需要先运行哪一步。
 
 [TB 温偏标定](https://github.com/Lee-Eee-Eee/GRID_Calibration_Lab/wiki/TB-Calibration) · [结果复核与保存](https://github.com/Lee-Eee-Eee/GRID_Calibration_Lab/wiki/Review-and-Results) · [常见问题](https://github.com/Lee-Eee-Eee/GRID_Calibration_Lab/wiki/Troubleshooting) · [教程首页](https://github.com/Lee-Eee-Eee/GRID_Calibration_Lab/wiki/Home)

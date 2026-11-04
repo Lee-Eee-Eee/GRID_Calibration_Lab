@@ -72,6 +72,43 @@ test('the selected input is one accessible picker that opens its exact slot', as
   assert.equal(ui.element('layer-inputs').children[0].children[1].disabled, true);
 });
 
+test('navigation lights distinguish missing, reused and computed products without hiding pending work', () => {
+  const ui = controller();
+  for (const [stage, tone, label] of [
+    [{status:'not_run',history_count:0,current_count:0}, 'empty', '未运行，无结果'],
+    [{status:'not_run',history_count:5,current_count:0}, 'available', '未运行，有结果'],
+    [{status:'not_run',history_count:0,current_count:2}, 'available', '未运行，有结果'],
+    [{status:'succeeded',current_count:1}, 'computed', '已计算'],
+    [{status:'completed',current_count:1}, 'computed', '已计算'],
+    [{status:'succeeded',stale:true,current_count:1}, 'stale', '已计算，待更新'],
+    [{status:'succeeded',acquisition_coverage:{completed:2,required:5}}, 'partial', '部分计算，已处理 2 / 5'],
+    [{status:'running'}, 'running', '运行中'],
+    [{status:'queued'}, 'queued', '排队中'],
+    [{status:'failed',history_count:5}, 'failed', '计算失败'],
+  ]) {
+    const actual = ui.run(`navigationIndicator(${JSON.stringify(stage)})`);
+    assert.equal(actual.tone, tone);
+    assert.equal(actual.label, label);
+  }
+  assert.equal(ui.run('navigationIndicator({status:"succeeded"},false).tone'), 'idle');
+});
+
+test('navigation keeps status text accessible while showing one light beside aligned layer names', () => {
+  const ui = controller();
+  ui.run(`state.run.stages={TB_L0:{status:'not_run'},TB_L1:{status:'not_run',history_count:3},TB_L2:{status:'succeeded'}};renderNavigation();`);
+  const group = ui.element('stage-nav').children[0];
+  assert.equal(group.children[0].children[0].textContent, 'TB');
+  assert.equal(group.children[0].children[1].textContent, '温度–偏压');
+  for (const [index, tone, label] of [[1,'empty','未运行，无结果'],[2,'available','未运行，有结果'],[3,'computed','已计算']]) {
+    const button = group.children[index];
+    assert.equal(button.children.length, 3);
+    assert.equal(button.children[2].className, `nav-status ${tone}`);
+    assert.equal(button.children[2].getAttribute('aria-hidden'), 'true');
+    assert.ok(button.getAttribute('aria-label').includes(label));
+    assert.ok(button.title.includes(label));
+  }
+});
+
 test('candidate filtering respects source, task, search and real coverage', () => {
   const ui = controller();
   ui.run(`inputSelection.mode='input';inputSelection.slot='data';inputSelection.origin='task';
