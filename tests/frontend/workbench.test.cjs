@@ -141,6 +141,35 @@ test('EC layer switch while rendering cannot select an old energy point', async 
   assert.equal(ui.run('selected.length'), 0);
 });
 
+test('an explicit empty corr overview never treats native spectra.parquet as an event file', async () => {
+  const ui = controller();
+  ui.run(`state.layer='EC_L1';state.selected=[];state.calls=[];
+    artifactsForLayer=()=>[{name:'spectra.parquet',path:'15B/ec/L1/source/spectra.parquet'},{name:'old_corr.l1.parquet',path:'old_corr.l1.parquet'}];
+    renderEcSourceConfig=()=>{};selectEcPoint=async point=>state.selected.push(point.stem);
+    api=async path=>{state.calls.push(path);return {files:[],points:[]};};`);
+  await ui.run('loadEcAnalysis()');
+  assert.equal(ui.run('state.selected.length'), 0);
+  assert.equal(ui.run('state.point'), null);
+  assert.equal(ui.run('state.calls.some(path=>path.includes("/ec-spectrum"))'), false);
+});
+
+test('legacy corr overview fallback accepts only corrected event Parquet suffixes', async () => {
+  const ui = controller();
+  ui.run(`state.layer='EC_L1';state.selected=[];
+    artifactsForLayer=()=>[{name:'spectra.parquet'},{name:'raw.l0.parquet'},{name:'signal_corr.l1.parquet',path:'signal_corr.l1.parquet'}];
+    renderEcSourceConfig=()=>{};selectEcPoint=async point=>state.selected.push(point.stem);api=async()=>({});`);
+  await ui.run('loadEcAnalysis()');
+  assert.equal(ui.run('state.selected.join()'), 'signal');
+});
+
+test('an empty corr page disables current-file execution while keeping full-layer execution available', () => {
+  const ui = controller();
+  ui.run(`state.layer='EC_L1';state.point=null;$('run-scope').value='representative';productionSetBusy(false);`);
+  assert.equal(ui.element('run-layer').disabled, true);
+  ui.run(`$('run-scope').value='full';productionSetBusy(false);`);
+  assert.equal(ui.element('run-layer').disabled, false);
+});
+
 test('reversed channel responses retain the latest channel and file', async () => {
   const ui = controller();
   ui.run(`
@@ -181,6 +210,26 @@ test('a surface refresh finishing after an explicit file selection preserves the
   assert.equal(ui.run('state.point.stem'), '101');
   assert.equal(ui.element('point-select').value, '14B:101:0');
   assert.equal(ui.run('savedView().familyStems.TB'), '101');
+});
+
+test('TB curve drilldown requests the selected L1 input of its consumer layer', async () => {
+  const ui = controller();
+  ui.run(`state.layer='TB_L2';state.calls=[];
+    highlightSelectedPoint=async()=>{};renderL1Workspace=()=>{};renderCurrentStatus=()=>{};renderSpectrum=async()=>{};
+    api=async path=>{state.calls.push(path);return {x:[0,100],y:[1,20],fit:{window_lo:20,window_hi:80}};};`);
+  await ui.run(`selectPoint({id:'14B:condition:0',stem:'condition',channel:0})`);
+  assert.match(ui.run('state.calls[0]'), /layer=TB_L1&consumer_layer=TB_L2/);
+});
+
+test('EC calibration drilldown requests the peak product selected by its consumer layer', async () => {
+  const ui = controller();
+  ui.run(`state.layer='EC_L3';state.calls=[];
+    renderEcReviewFiles=()=>{};renderCurrentStatus=()=>{};renderSpectrum=async()=>{};renderEcOverview=async()=>{};
+    renderSpectrumProvenance=()=>{};renderEcSourceConfig=()=>{};
+    api=async path=>{state.calls.push(path);return {x:[0,100],y:[1,20],fit:{lo:20,hi:80}};};`);
+  await ui.run(`selectEcPoint({id:'14B:ec:Co60:1332.492:0',stem:'Co60',channel:0,E:1332.492})`);
+  assert.match(ui.run('state.calls[0]'), /layer=EC_L2/);
+  assert.match(ui.run('state.calls[0]'), /consumer_layer=EC_L3/);
 });
 
 test('an earlier file switch cannot overwrite a later file switch when window saves finish out of order', async () => {
@@ -288,7 +337,7 @@ test('file fitting cannot submit the previous trial file after another trial has
       notify = () => {};
     `);
     ui.run(`const pending = ${action}; state.run = { id:'run-b', payload:'15B' }; saved.resolve();`);
-    await assert.rejects(ui.run('pending'), /试算已切换/);
+    await assert.rejects(ui.run('pending'), /任务已切换/);
     assert.equal(ui.run('submissions'), 0, action);
   }
 });
@@ -636,7 +685,7 @@ test('trial choices contain only the selected payload with concise labels and pr
     ] };
     renderRunOptions();
   `);
-  assert.deepEqual(ui.element('run-select').options.map(option => option.text), ['选择试算', '新协议验收', '窗口复核']);
+  assert.deepEqual(ui.element('run-select').options.map(option => option.text), ['选择任务', '新协议验收', '窗口复核']);
   assert.equal(ui.element('run-select').value, 'ten-b');
   assert.equal(ui.run('state.bootstrap.runs[1].name'), '10B · 10B · 新协议验收（');
 });

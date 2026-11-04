@@ -1,5 +1,6 @@
 """温度偏压(TB)标定 - L2层处理器。"""
 
+import copy
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
@@ -64,6 +65,7 @@ class TBL2Processor:
         tb_l0_dir: Optional[Path] = None,
         excluded_points: Optional[Iterable[str]] = None,
         *, analysis_contract: str | None = None, analysis_config: dict | None = None,
+        fit_channels: Iterable[int] | None = None,
     ) -> Dict[str, Any]:
         if analysis_contract is not None:
             self.analysis_contract = analysis_contract
@@ -83,6 +85,8 @@ class TBL2Processor:
             "warnings": [],
             "quality_policy": "warning_only",
             "included_points": [],
+            "channels_updated": [],
+            "channels_reused": [],
         }
 
         try:
@@ -106,12 +110,25 @@ class TBL2Processor:
             timestamp = get_timestamp()
             params_list = []
             files_list = []
+            requested = set(range(4)) if fit_channels is None else set(fit_channels)
+            if not requested or any(isinstance(ch, bool) or ch not in range(4) for ch in requested):
+                raise ValueError("fit_channels must contain physical channels 0–3")
+            previous, previous_source = self._previous_models() if fit_channels is not None else ({}, None)
 
             for ch in range(4):
                 if unsupported_spectral_model(self.response_payload, ch):
                     params_list.append(None)
                     continue
                 ch_data = [d for d in fit_data if d["channel"] == ch]
+                if ch not in requested and ch in previous:
+                    params = copy.deepcopy(previous[ch])
+                    params.setdefault("channel", ch)
+                    params.setdefault("payload", self.payload_name)
+                    params.setdefault("chi2", params.get("chisquare", 0.))
+                    params_list.append(params)
+                    results["channels_reused"].append(ch)
+                    results["included_points"].extend(f"{self.payload_name}:{row['file']}:{ch}" for row in ch_data)
+                    continue
                 if len(ch_data) < 8:
                     print(f"Channel {ch} has too few data points ({len(ch_data)}) for L2 fit.")
                     results["errors"].append(f"Channel {ch}: requires at least 8 usable points, got {len(ch_data)}")
@@ -125,12 +142,15 @@ class TBL2Processor:
                 params["channel"] = ch
                 params["payload"] = self.payload_name
                 params_list.append(params)
+                results["channels_updated"].append(ch)
 
                 out_fig = self.layout.get_tb_l2_figure(f"{timestamp}_{self.payload_name}_ch{ch}_TB_fit.l2.png")
                 self._plot_channel_fit(ch_data, params, out_fig, ch)
                 files_list.append(out_fig.name)
 
             results["fit_params"] = params_list
+            if results["channels_reused"]:
+                results["reused_from"] = previous_source
 
             # cali_format wiki 规范：list[4]，每条 11 个字段 {G0,k,V0,b,c,*_err,chisquare}
             wiki_records = []
@@ -168,7 +188,8 @@ class TBL2Processor:
                     self.layout.product_root, self.payload_name, "tb", models,
                     {"config": self.config, "inputs": fit_data, "excluded": sorted(excluded),
                      "fit": {"method": "lmfit", "weights": "1/center_std", "scale_covar": False},
-                     "internal_layer": "TB_L2"},
+                     "internal_layer": "TB_L2", "channels_updated": results["channels_updated"],
+                     "channels_reused": results["channels_reused"], "reused_from": results.get("reused_from")},
                     figures={name.replace(".l2.png", ".png"): self.layout.get_tb_l2_dir() / "figures" / name
                              for name in files_list},
                 )
@@ -180,6 +201,51 @@ class TBL2Processor:
 
         write_json(self.layout.get_tb_l2_json("L2_manifest.json"), results)
         return results
+
+    def _previous_models(self):
+        """Read seeded coefficients; a missing channel is fitted in this attempt."""
+        directory = self.layout.get_tb_l2_dir()
+        manifest = {}
+        manifest_path = directory / "json/L2_manifest.json"
+        if manifest_path.is_file():
+            try:
+                manifest = read_json(manifest_path)
+            except (OSError, ValueError):
+                pass
+        candidates = list(reversed(sorted((directory / "json").glob("*_TB*.json"))))
+        candidates += list(reversed(sorted(directory.glob("*/*_temp_bias_fit.json"))))
+        preferred = directory / "json" / str(manifest.get("output_json") or "")
+        if preferred.is_file():
+            candidates.insert(0, preferred)
+        required = ("G0", "k", "V0", "b", "c", "G0_err", "k_err", "V0_err", "b_err", "c_err")
+        for path in candidates:
+            try:
+                rows = read_json(path)
+                if isinstance(rows, dict):
+                    rows = rows.get("fit_params")
+                if not isinstance(rows, list) or len(rows) != 4:
+                    continue
+                models = {}
+                for ch, row in enumerate(rows):
+                    if (not isinstance(row, dict) or not all(finite_number(row.get(key)) for key in required)
+                            or row["G0"] <= 0):
+                        continue
+                    model = copy.deepcopy(row)
+                    prior = manifest.get("fit_params")
+                    if isinstance(prior, list) and len(prior) > ch and isinstance(prior[ch], dict):
+                        match = all(prior[ch].get(key) == row.get(key) for key in required)
+                        if match:
+                            model = {**copy.deepcopy(prior[ch]), **model}
+                    if self.analysis_contract == CONTRACT and not all(
+                        finite_number(model.get(key)) for key in ("n_points", "chi2", "chi2_reduced")
+                    ):
+                        continue
+                    models[ch] = model
+                if models:
+                    return models, str(path)
+            except (OSError, TypeError, ValueError):
+                continue
+        return {}, None
 
     def _collect_fit_data(self, tb_l1_dir: Path, tb_l0_dir: Path) -> List[Dict[str, Any]]:
         """从 L1 拟合结果 + L0 metadata 中收集每通道独立的 T/V/gain/center_err。"""

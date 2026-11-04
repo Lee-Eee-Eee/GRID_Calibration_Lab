@@ -70,7 +70,7 @@ def prepare(workspace: Path, data_root: Path, *, create_runs: bool = False) -> d
                     if existing_runs:
                         run_id, created = existing_runs[0]["id"], False
                     else:
-                        run = workbench.create(dataset["payload"], f"{dataset['payload']} 新规范回归",
+                        run = workbench.create(dataset["payload"], f"{dataset['payload']} 标定",
                                                dataset_id=dataset["id"])
                         index.update_run(workbench.read(run["id"]))
                         run_id, created = run["id"], True

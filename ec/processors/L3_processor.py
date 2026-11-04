@@ -1,5 +1,6 @@
 """能量标定(EC)处理 - L3层处理器。"""
 
+import copy
 import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -77,6 +78,8 @@ class ECL3Processor:
             "ec_peak_sets": peak_sets,
             "inactive_points": [],
             "analysis_contract": self.analysis_contract,
+            "channels_updated": [],
+            "channels_reused": [],
         }
 
         try:
@@ -95,14 +98,36 @@ class ECL3Processor:
             fit_data_all = [row for row in fit_data_all if self._point_id(row) not in excluded]
             if not fit_data_all:
                 raise ValueError("No L2 fit data collected")
-            if self.analysis_contract:
-                self._validate_native_bindings(fit_data_all, results)
+            requested = set(range(4)) if cfg.get("fit_channels") is None else set(cfg["fit_channels"])
+            if not requested or any(isinstance(ch, bool) or ch not in range(4) for ch in requested):
+                raise ValueError("fit_channels must contain physical channels 0–3")
+            previous, previous_meta, previous_source = self._previous_models() if cfg.get("fit_channels") is not None else ({}, {}, None)
+            reused = {ch: row for ch, row in previous.items() if ch not in requested
+                      and not unsupported_spectral_model(self.response_payload, ch)}
+            recomputed = {ch for ch in range(4) if ch not in reused
+                          and not unsupported_spectral_model(self.response_payload, ch)}
+            if self.analysis_contract and recomputed:
+                self._validate_native_bindings([row for row in fit_data_all if row["channel"] in recomputed], results)
+                if reused:
+                    results["reference_by_channel"] = {
+                        str(ch): copy.deepcopy((previous_meta.get("reference_by_channel") or {}).get(
+                            str(ch), previous_meta.get("reference"))) if ch in reused else copy.deepcopy(results["reference"])
+                        for ch in range(4) if not unsupported_spectral_model(self.response_payload, ch)
+                    }
+                    retained = [row for row in (previous_meta.get("inputs") or []) if row.get("channel") in reused]
+                    results["inputs"] = retained + results.get("inputs", [])
+                    results["band_fits"] = {str(ch): copy.deepcopy((previous_meta.get("band_fits") or {}).get(str(ch), {}))
+                                           for ch in reused}
 
             ts = get_timestamp()
 
             for ch in range(4):
                 if unsupported_spectral_model(self.response_payload, ch):
                     results["calibration_params"][str(ch)] = _empty_channel_result(ch)
+                    continue
+                if ch in reused:
+                    results["calibration_params"][str(ch)] = copy.deepcopy(reused[ch])
+                    results["channels_reused"].append(ch)
                     continue
                 ch_data_raw = [d for d in fit_data_all if d["channel"] == ch]
                 if not ch_data_raw:
@@ -134,6 +159,7 @@ class ECL3Processor:
                         self._fit_channel_native(ch, ch_data, ts, cfg, results)
                     else:
                         self._fit_channel(ch, ch_data, ch_data_raw, ts, e_cut, results)
+                    results["channels_updated"].append(ch)
                 except Exception as exc:
                     results["calibration_params"].setdefault(str(ch), _empty_channel_result(ch))
                     results["errors"].append(f"Channel {ch}: {exc}")
@@ -154,6 +180,8 @@ class ECL3Processor:
                 },
             )
             results["output_json"] = out_json.name
+            if reused:
+                results["reused_from"] = previous_source
             if self.analysis_contract:
                 from ...common.cali_contract import publish_l2
                 results["canonical"] = publish_l2(
@@ -161,6 +189,9 @@ class ECL3Processor:
                     [results["calibration_params"].get(str(ch)) for ch in range(4)],
                     {"config": cfg, "reference": results.get("reference"),
                      "band_fits": results.get("band_fits"), "inputs": results.get("inputs"),
+                     "reference_by_channel": results.get("reference_by_channel"),
+                     "channels_updated": results["channels_updated"], "channels_reused": results["channels_reused"],
+                     "reused_from": results.get("reused_from"),
                      "fit": {"energy": "ODR fixed energy anchors; E=f(ADC)",
                              "resolution": "direct R=sqrt(aE2+bE+c)/E", "scale_covar": False},
                      "status": "partial" if results["errors"] else "ready"},
@@ -176,6 +207,49 @@ class ECL3Processor:
 
         write_json(self.layout.get_ec_l3_json("L3_manifest.json"), results)
         return results
+
+    def _previous_models(self):
+        """Load seeded aggregate coefficients without changing their values."""
+        directory = self.layout.get_ec_l3_dir() / "json"
+        manifest = {}
+        if (directory / "L3_manifest.json").is_file():
+            try:
+                manifest = read_json(directory / "L3_manifest.json")
+            except (OSError, ValueError):
+                pass
+        candidates = list(reversed(sorted(directory.glob("*_EC.l3.json"))))
+        preferred = directory / str(manifest.get("output_json") or "")
+        if preferred.is_file():
+            candidates.insert(0, preferred)
+        for path in candidates:
+            try:
+                value = read_json(path)
+                if not isinstance(value, dict) or not isinstance(value.get("calibration_params"), dict):
+                    continue
+                if bool(value.get("analysis_contract")) != bool(self.analysis_contract):
+                    continue
+                models = {}
+                for channel, row in value["calibration_params"].items():
+                    if not isinstance(row, dict):
+                        continue
+                    ch = int(channel)
+                    if ch not in range(4):
+                        continue
+                    bands = ("low", "high") if self.analysis_contract else ("low",)
+                    names = [name for band in bands for name in (f"EC_{band}", f"resolution_{band}")]
+                    if not all(isinstance(row.get(name), list) and len(row[name]) == 3
+                               and all(np.isfinite(_number(item)) for item in row[name]) for name in names):
+                        continue
+                    models[ch] = copy.deepcopy(row)
+                if not models:
+                    continue
+                metadata = copy.deepcopy(manifest)
+                if value.get("contract_meta") and Path(value["contract_meta"]).is_file():
+                    metadata = {**metadata, **read_json(Path(value["contract_meta"]))}
+                return models, metadata, str(path)
+            except (OSError, ValueError, TypeError):
+                continue
+        return {}, {}, None
 
     def _validate_native_bindings(self, rows, results):
         import hashlib

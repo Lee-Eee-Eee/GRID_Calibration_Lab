@@ -113,6 +113,9 @@ class ComputeAdapter:
 
     def historical_layer(self, payload: str, layer: str) -> Path:
         """Read-only source layer; an edited output label never renames its input."""
+        selected = getattr(self, "input_layer_roots", {}).get(layer)
+        if selected:
+            return self._layer_dir(Path(selected), payload, layer)
         if self.dataset:
             if self.dataset.get("product_dir"):
                 kind, level = layer.split("_")
@@ -504,7 +507,7 @@ class ComputeAdapter:
             if isinstance(records, list)
             else None
         )
-        if path is None and record and record.get("contract_node"):
+        if (path is None or getattr(self, "prefer_saved_tb", False)) and record and record.get("contract_node"):
             from ..common.contract_import import read_saved_spectrum
             result = read_saved_spectrum(Path(record["contract_node"]), channel, "tb")
             result.update(stem=stem, yerr=result["error"], y_label=result["ordinate"],
@@ -882,7 +885,12 @@ class ComputeAdapter:
             raise ValueError(f"{layer} 输入不完整，请先按当前读取配置重新运行上游层")
         for path in paths:
             metadata = read_parquet_metadata(path, "acquisition")
-            if metadata.get("profile_sha256") != self.acquisition.get("_sha256"):
+            explicit = layer in getattr(self, "explicit_input_layers", set())
+            accepted = getattr(self, "accepted_input_profiles", {}).get(layer, [self.acquisition.get("_sha256")])
+            sha = metadata.get("profile_sha256")
+            prior_rule = getattr(self, "input_profile_rules", {}).get(sha)
+            compatible_file = prior_rule is not None and prior_rule.get(layer) is not None and _stem(path.name) not in prior_rule[layer]
+            if not explicit and sha not in accepted and not compatible_file:
                 raise ValueError(f"{path.name} 使用旧读取标准或缺少配置来源；请先重新运行 {layer}")
 
     def execute(
@@ -978,7 +986,7 @@ class ComputeAdapter:
                 only_stems=[f"{stem}.l0" for stem in selection] if selection is not None else None,
             )
         elif layer == "TB_L2":
-            if self.acquisition:
+            if self.acquisition and "TB_L1" not in getattr(self, "explicit_input_layers", set()):
                 allowed = {
                     row["stem"] for row in inventory["raw"]["reading_preview"]["rows"] if row["kind"] == "tb"
                 }
@@ -988,6 +996,7 @@ class ComputeAdapter:
             (layout.get_tb_l0_dir() / "parquet").mkdir(parents=True, exist_ok=True)
             result = TBL2Processor(payload, product_root, response_payload=self.detector_payload(payload)).process(
                 layout.get_tb_l1_dir(), layout.get_tb_l0_dir(), excluded_points=config.get("excluded", []),
+                **({"fit_channels": config["fit_channels"]} if config.get("fit_channels") else {}),
                 **({"analysis_contract": contract["analysis_contract"], "analysis_config": contract["analysis_config"]} if native else {})
             )
             selection = None  # A surface always uses the full current L1 snapshot.
@@ -1136,7 +1145,7 @@ class ComputeAdapter:
                 },
             )
         else:
-            if self.acquisition:
+            if self.acquisition and "EC_L2" not in getattr(self, "explicit_input_layers", set()):
                 allowed = {
                     f"{row['energy_keV']:g}keV" if row["kind"] == "xray" else f"src_{row['source']}"
                     for row in inventory["raw"]["reading_preview"]["rows"]
@@ -1148,6 +1157,7 @@ class ComputeAdapter:
                         path.unlink()
             result = ECL3Processor(payload, product_root, response_payload=self.detector_payload(payload), **contract).process(
                 layout.get_ec_l2_dir(), {**EC_PROCESS_PARAMS, "ec_excluded": config.get("ec_excluded", []),
+                                       "fit_channels": config.get("fit_channels"),
                                        **analysis_settings,
                                        "ec_peak_sets": config.get("ec_peak_sets", {})}
             )

@@ -26,7 +26,7 @@
 
 14B / 15B 已接入 `cali_proc 0.5` 的文件表和四份分析配置。服务器计算与本地界面转发见 [GRID 部署](docs/server_workbench.md)，真实数据验证见 [适配验收](docs/contract_migration_validation.md)。
 
-15B Co60 的 1173.228 / 1332.492 keV 双峰已在开发工作区保存为配置 v2，原版保留比较；[双峰复核](docs/co60_doublet_validation.md)记录谱拟合和 EC 残差。新成员按 [EC 教程](https://github.com/Lee-Eee-Eee/GRID_Calibration_Lab/wiki/EC-Calibration#15b-co60-联合双峰)建立自己的双峰预设版本。服务器数据目录可直接关联个人试算、配置版本和产品索引。
+15B Co60 的 1173.228 / 1332.492 keV 双峰已在开发工作区保存为配置 v2，原版保留比较；[双峰复核](docs/co60_doublet_validation.md)记录谱拟合和 EC 残差。新成员按 [EC 教程](https://github.com/Lee-Eee-Eee/GRID_Calibration_Lab/wiki/EC-Calibration#15b-co60-联合双峰)建立自己的双峰预设版本。服务器数据目录可直接关联个人任务、配置版本和产品索引。
 
 ![TB 三维曲面与原谱联动](docs/images/tb-surface.jpg)
 
@@ -37,10 +37,11 @@
 | 要做的事 | 在工作台中完成 |
 | --- | --- |
 | 读取不同载荷的数据 | 配置事件与 HK XML、字段换算、文件配对和工况来源，保存为载荷预设。 |
+| 接入已有处理结果 | 每层选择共享产品、本任务上游或其他任务的结果；也可直接采用已有本层结果。 |
 | 找到需要复核的谱 | 从工况列表或质量地图选择通道，查看能谱、候选峰、拟合曲线、参数误差和残差。 |
 | 修改某一个结果 | 拖动拟合窗或输入 ADC 边界，重拟合当前通道；屏蔽、恢复点后更新曲面或能量关系。 |
 | 处理一张多峰源谱 | 为每条能线、每个通道设置独立窗口和中心锚，拟合当前峰或当前通道的全部能线。 |
-| 保存并继续处理 | 每份试算保存读取配置、TB 依赖、窗口、修订、结果和作业日志，重开后恢复。 |
+| 保存并继续处理 | 每份任务保存读取配置、TB 依赖、窗口、修订、结果和作业日志，重开后恢复。 |
 
 <details>
 <summary><strong>能谱复核：质量地图、工况列表与拟合窗口</strong></summary>
@@ -76,7 +77,7 @@ New-Item -ItemType Directory -Force ../grid-workspace | Out-Null
 uv run --extra workbench grid-workbench --workspace ../grid-workspace --port 8765
 ```
 
-打开 **http://127.0.0.1:8765/**，选择数据和产品目录、载荷读取预设，再创建试算。已有原始数据或分层产品都可以作为入口。新结果写入工作区的 `runs/`，图表资源随应用在本机加载。
+打开 **http://127.0.0.1:8765/**，选择数据和产品目录、载荷读取预设，再创建任务。已有原始数据或分层产品都可以作为入口。新结果写入工作区的 `runs/`，图表资源随应用在本机加载。
 
 macOS / Linux 使用 `mkdir -p ../grid-workspace` 创建工作区，其余命令相同。
 
@@ -135,8 +136,9 @@ pipeline.run_ec()
 | 文档 | 内容 |
 | --- | --- |
 | [成员使用 Wiki](https://github.com/Lee-Eee-Eee/GRID_Calibration_Lab/wiki) | 从服务器安装到 TB / EC 标定、预设、多峰和结果复核的完整教程。 |
-| [工作台使用](workbench/README.md) | 数据目录、载荷预设、TB 依赖、试算、运行和结果复核。 |
+| [工作台使用](workbench/README.md) | 数据目录、载荷预设、TB 依赖、任务、运行和结果复核。 |
 | [L1 谱复核](docs/l1_workbench.md) | 工况与通道切换、拟合窗口、残差和局部重算。 |
+| [分层输入与局部更新](docs/layer_inputs.md) | 输入来源、已有结果复用、固定依赖和配置变化后的重算范围。 |
 | [处理与数据指南](docs/processing.md) | TB / EC 分层、命令行、Python API、产物与曲面模型。 |
 | [新数据规范对照](docs/cali_proc_format_20261102.md) | cali_proc 的 EXP / L0–L2 契约、载荷差异及本库适配位置。 |
 | [服务器部署](docs/server_workbench.md) | 数据留在 GRID，通过 SSH 转发在本地操作。 |
@@ -148,7 +150,7 @@ pipeline.run_ec()
 
 ### 当前适用范围
 
-14B / 15B 新预设按规范执行分段 ODR `E=f(ADC)` 及分辨率拟合；既有试算保持自己的配置。10B、11B 和 N5 使用各自预设；10B / 11B 的塑料 CH3 保留模型待定状态，N5 的 EC 跨照射本底仍待接入。
+14B / 15B 新预设按规范执行分段 ODR `E=f(ADC)` 及分辨率拟合；既有任务保持自己的配置。10B、11B 和 N5 使用各自预设；10B / 11B 的塑料 CH3 保留模型待定状态，N5 的 EC 跨照射本底仍待接入。
 
 拟合质量以疑似问题提示呈现。数值有效的结果可以继续参与下游计算，手动屏蔽、数值失败和模型待定分别处理。
 

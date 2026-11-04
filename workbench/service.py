@@ -28,6 +28,8 @@ from .dependencies import snapshot, tb_package
 from .ec_interactive import ECInspector
 from .ec_peaks import catalog as source_peak_catalog
 from .ec_peaks import draft_points, normalize_peak_sets
+from .input_routing import LayerInputRouting, summary
+from .layer_products import LayerProductCatalog
 from .presets import PresetRegistry
 from .workspace_index import WorkspaceIndex
 
@@ -107,9 +109,9 @@ def peak_job_settings(layer, spec):
         result["bin_width"] = float(width)
     if "fit_channels" in spec:
         channels = spec["fit_channels"]
-        if (layer not in ("TB_L1", "EC_L2") or not isinstance(channels, list) or not channels
+        if (layer not in ("TB_L1", "TB_L2", "EC_L2", "EC_L3") or not isinstance(channels, list) or not channels
                 or any(type(ch) is not int or ch not in range(4) for ch in channels)):
-            raise ValueError("fit_channels 只适用于 TB L1 / EC L2，须为 0–3 的通道列表")
+            raise ValueError("fit_channels 须为拟合层的 0–3 通道列表")
         result["fit_channels"] = sorted(set(channels))
     if "automatic_window" in supplied:
         if not isinstance(spec["automatic_window"], bool):
@@ -148,7 +150,7 @@ def peak_job_settings(layer, spec):
     return result
 
 
-class Workbench:
+class Workbench(LayerInputRouting):
     def __init__(self, workspace: Path):
         self.workspace = Path(workspace).resolve()
         self.runs = self.workspace / "runs"
@@ -156,6 +158,7 @@ class Workbench:
         self.adapter = ComputeAdapter(self.workspace)
         self.catalog = DatasetCatalog(self.workspace)
         self.preset_registry = PresetRegistry(self.workspace)
+        self.layer_product_catalog = LayerProductCatalog(self.workspace)
         self.lock = threading.RLock()
         # Matplotlib and the legacy parser have process-global state.
         self.executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="calibration")
@@ -176,6 +179,9 @@ class Workbench:
                     )
                     write(path.parent / "jobs" / job["id"] / "job.json", job)
                     changed = True
+            if (state.get("update_chain") or {}).get("status") == "running":
+                state["update_chain"].update(status="failed", error="服务重启中断了连续更新；已完成结果保留，可继续更新受影响层。")
+                changed = True
             if changed:
                 write(path, state)
 
@@ -235,14 +241,17 @@ class Workbench:
             self.peak_catalog_cache[key] = result
         return copy.deepcopy(self.peak_catalog_cache[key])
 
-    def _ec_points(self, state, channel, adapter=None):
+    def _ec_points(self, state, channel, adapter=None, products=None):
         adapter = adapter or self.adapter_for(state)
-        points = ECInspector(adapter).points(state["payload"], self.root(state["id"]) / "products", channel)
+        points = ECInspector(adapter).points(state["payload"], products or self.root(state["id"]) / "products", channel)
         return draft_points(self._source_peaks(state, adapter), state["payload"], channel, points)
 
     def _all_ec_points(self, state, adapter=None):
         adapter = adapter or self.adapter_for(state)
         existing = ECInspector(adapter).points(state["payload"], self.root(state["id"]) / "products")
+        if state.get("input_bindings", {}).get("EC_L3", {}).get("data"):
+            selected = ECInspector(adapter).points(state["payload"], self._products_for_layer(state, "EC_L3"))
+            existing = list({point["id"]: point for point in [*existing, *selected]}.values())
         sources = self._source_peaks(state, adapter)
         return [point for ch in range(4) for point in draft_points(sources, state["payload"], ch, existing)]
 
@@ -357,8 +366,12 @@ class Workbench:
 
     def adapter_for(self, state):
         if state.get("acquisition"):
-            return ComputeAdapter(self.workspace, state.get("dataset"), load_profile(state["acquisition"]),
-                                  response_payload=_response_payload(state))
+            profile = load_profile(state["acquisition"])
+            adapter = ComputeAdapter(self.workspace, state.get("dataset"), profile,
+                                     response_payload=_response_payload(state))
+            adapter.accepted_input_profiles = self._accepted_input_profiles(state, profile)
+            adapter.input_profile_rules = state.get("input_profile_rules", {})
+            return adapter
         return ComputeAdapter(self.workspace, state["dataset"], response_payload=_response_payload(state)) if state.get("dataset") else self.adapter
 
     def acquisition_defaults(self, profile=None):
@@ -396,6 +409,8 @@ class Workbench:
         result["warnings"] = (
             [] if result["rows"] else ["当前未发现原始数据；可保存规则，计算前需载入匹配文件。"]
         )
+        before = load_profile(state["acquisition"]) if state.get("acquisition") else {}
+        result["impact"] = self._configuration_impact(state, before, prepared, {"raw": {"reading_preview": result}})
         return result
 
     def save_acquisition(self, run_id, profile, reason=None, *, preset_reference=None):
@@ -419,26 +434,27 @@ class Workbench:
             reference = freeze_profile(
                 self.root(run_id), prepared, previous["revision"] + 1 if previous else 1
             )
-            state.update(
-                acquisition=reference,
-                inventory=inventory,
-                acquisition_products={},
-                acquisition_l1_channels={},
-                acquisition_ec_l2_points={},
-                ec_l2_provenance={},
-                tb_l1_failures={},
-                acquisition_pending_layers=list(LAYERS),
-                pending_windows=[],
-                pending_ec_windows=[],
-                pending_ec_l0=[],
-                ec_dependency=None,
-                ec_scope=None,
-            )
+            impact = preview["impact"]
+            self._remember_profile_rules(state, previous, impact)
+            if previous:
+                state.setdefault("prior_acquisitions", []).append(previous)
+            state.update(acquisition=reference, inventory=inventory)
+            rows = (inventory.get("raw", {}).get("reading_preview") or {}).get("rows", [])
+            valid_tb = {row["stem"] for row in rows if row.get("kind") == "tb"}
+            valid_ec = {row["stem"] for row in rows if row.get("kind") != "tb"}
+            valid_energies = {f"{float(row['energy_keV']):g}keV" if row.get("kind") == "xray" else
+                              f"src_{row.get('source')}" for row in rows if row.get("kind") in ("xray", "source")}
+            state["pending_windows"] = [point for point in state.get("pending_windows", [])
+                                        if point.rsplit(":", 2)[1] in valid_tb]
+            state["pending_ec_windows"] = [point for point in state.get("pending_ec_windows", [])
+                                           if point.split(":")[2] in valid_energies]
+            state["pending_ec_l0"] = [stem for stem in state.get("pending_ec_l0", []) if stem in valid_ec]
+            self._invalidate_coverage(state, impact)
+            self._remember_impact(state, impact)
             if preset_reference:
                 state["acquisition_preset"] = copy.deepcopy(preset_reference)
             elif state.get("acquisition_preset"):
                 state["acquisition_preset"]["modified"] = True
-            state["dirty_layers"] = sorted(set(state["dirty_layers"]) | set(LAYERS))
             state["config_revision"] += 1
             revision = {
                 "revision": state["config_revision"],
@@ -447,6 +463,7 @@ class Workbench:
                 "acquisition": reference,
                 "acquisition_preset": state.get("acquisition_preset"),
                 "config": copy.deepcopy(state["config"]),
+                "impact": impact,
             }
             state["revisions"].append(revision)
             state["updated_at"] = now()
@@ -766,6 +783,11 @@ class Workbench:
                 target.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(source, target)
             write(root / "contract-import.json", imported_index)
+        if selected_preset:
+            from .layer_products import normalize_tb_aliases
+
+            for private_root in (root / "products", root / "baseline"):
+                normalize_tb_aliases(private_root, payload, selected_preset["profile"])
         tb_files = sorted((root / "baseline" / payload / "tb/L2/json").glob("*_TB*.json"))
         tb_files += sorted(adapter.historical_layer(payload, "TB_L2").glob("*/*_temp_bias_fit.json"))
         tb = None
@@ -780,7 +802,7 @@ class Workbench:
         state = {
             "id": run_id,
             "payload": payload,
-            "name": str(name or f"{payload} 交互试算")[:120],
+            "name": str(name or f"{payload} 标定")[:120],
             "created_at": now(),
             "updated_at": now(),
             "config_revision": 0,
@@ -853,6 +875,7 @@ class Workbench:
     def patch(self, run_id, patch):
         with self.lock:
             state = self.read(run_id)
+            before_config = copy.deepcopy(state["config"])
             if any(j["status"] in ("queued", "running") for j in state["jobs"]):
                 raise ValueError("计算进行中，请等待完成后再保存修订")
             unknown = set(patch) - {"windows", "excluded", "ec_windows", "ec_excluded", "reason", "name"}
@@ -860,6 +883,8 @@ class Workbench:
                 raise ValueError(f"不支持的配置字段: {sorted(unknown)}")
             adapter = self.adapter_for(state)
             points = {p["id"] for p in adapter.points(state["payload"], self.root(run_id) / "products")}
+            if state.get("input_bindings", {}).get("TB_L2", {}).get("data"):
+                points.update(p["id"] for p in adapter.points(state["payload"], self._products_for_layer(state, "TB_L2")))
             stems = {p.split(":")[1] for p in points}
             changed = set()
             tb_ec_dependents = () if state.get("tb_binding") == "pinned" else ("EC_L1", "EC_L2", "EC_L3")
@@ -948,7 +973,7 @@ class Workbench:
                 [f"revisions/{state['config_revision']:04d}.json"],
                 "EC_L2" if "ec_windows" in patch or "ec_excluded" in patch else "TB_L1",
             )
-            state["dirty_layers"] = sorted(set(state["dirty_layers"]) | changed)
+            self._remember_impact(state, self._interactive_impact(state, before_config, patch))
             state["updated_at"] = now()
             self.save(state)
         return {**self.view(run_id, compact=True), "saved_files": saved_files}
@@ -1140,6 +1165,18 @@ class Workbench:
     def submit(self, run_id, spec):
         with self.lock:
             state = self.read(run_id)
+            if state.get("acquisition"):
+                from .layer_products import tb_aliases
+
+                profile = load_profile(state["acquisition"])
+                self._normalize_tb_settings(state, profile)
+                aliases = tb_aliases(profile)
+                if spec.get("layer", "").startswith("TB_") or spec.get("contract_layer", "").startswith("TB_"):
+                    spec = copy.deepcopy(spec)
+                    if spec.get("stem"):
+                        spec["stem"] = aliases.get(spec["stem"], spec["stem"])
+                    if spec.get("stems"):
+                        spec["stems"] = sorted({aliases.get(stem, stem) for stem in spec["stems"]})
             if "contract_layer" in spec:
                 if self.view(run_id).get("analysis_contract") != "cali_proc@0.5":
                     raise ValueError("此试算尚未采用新规范")
@@ -1155,13 +1192,14 @@ class Workbench:
             if any(j["status"] in ("queued", "running") for j in state["jobs"]):
                 raise ValueError("此试算已有计算任务")
             required_layer = {"TB_L2": "TB_L1", "EC_L3": "EC_L2"}.get(layer)
-            if required_layer in state.get("acquisition_pending_layers", []):
+            bound_data = state.get("input_bindings", {}).get(layer, {}).get("data")
+            if required_layer in state.get("acquisition_pending_layers", []) and not bound_data:
                 coverage = self.acquisition_coverage(state, required_layer)
                 if layer != "TB_L2" or self._unreviewed_tb_l1_inputs(state):
                     raise ValueError(
                         f"读取配置尚未覆盖全部 {required_layer} 输入（{coverage['completed']}/{coverage['required']}），请先完成上游重算"
                     )
-            if layer == "TB_L2" and "TB_L1" in state["dirty_layers"]:
+            if layer == "TB_L2" and "TB_L1" in state["dirty_layers"] and not bound_data:
                 unresolved = set(state.get("pending_windows", [])) - set(state["config"].get("excluded", []))
                 unresolved = {point for point in unresolved
                               if not unsupported_spectral_model(_response_payload(state), int(point.rsplit(":", 1)[1]))}
@@ -1179,11 +1217,11 @@ class Workbench:
                 raise ValueError("请先选择已有 TB L2 JSON 校正包，或计算 TB L2 后选择其结果")
             if layer in ("EC_L1", "EC_L2"):
                 self.verify_tb(selected)
-            if layer in ("EC_L2", "EC_L3") and self.stale(state):
+            if layer in ("EC_L2", "EC_L3") and self.stale(state) and not bound_data:
                 raise ValueError("EC 使用的 TB 版本已过期，请重新运行 EC L1")
-            if layer == "EC_L2" and state.get("ec_dependency") is None and not (spec.get("point_id") or spec.get("energy_key")):
+            if layer == "EC_L2" and state.get("ec_dependency") is None and not bound_data and not (spec.get("point_id") or spec.get("energy_key")):
                 raise ValueError("请先运行 EC L1，固定本次 TB 版本")
-            if layer == "EC_L3" and "EC_L2" in state["dirty_layers"]:
+            if layer == "EC_L3" and "EC_L2" in state["dirty_layers"] and not bound_data:
                 raise ValueError("请先运行 EC L2 更新能峰拟合")
             config = copy.deepcopy(state["config"])
             config.update(peak_job_settings(layer, spec))
@@ -1194,6 +1232,7 @@ class Workbench:
                 and not spec.get("energy_key")
                 and not config["representative"]
                 and state.get("ec_scope") != "all"
+                and not bound_data
             ):
                 raise ValueError("全量 EC L2 需要先执行全量 EC L1；当前仅有代表样例校正")
             if spec.get("energy_key"):
@@ -1244,6 +1283,10 @@ class Workbench:
                 if spec["stem"] not in known:
                     raise ValueError("未知工况")
                 config["only"] = [spec["stem"]]
+            if spec.get("stems"):
+                if not isinstance(spec["stems"], list) or not all(isinstance(item, str) and item for item in spec["stems"]):
+                    raise ValueError("观测范围无效")
+                config["only"] = sorted(set(spec["stems"]))
             if spec.get("point_id"):
                 if layer != "EC_L2":
                     raise ValueError("能峰局部重拟合只支持 EC L2")
@@ -1255,6 +1298,31 @@ class Workbench:
                 config["ec_point_id"] = spec["point_id"]
                 if "bin_width" not in config and point.get("bin_width") is not None:
                     config.update(peak_job_settings(layer, {"bin_width": point["bin_width"]}))
+            if bound_data and layer in ("TB_L1", "EC_L2"):
+                selected_scope = bound_data.get("scope") or {}
+                selected_channels = selected_scope.get("channels")
+                if selected_channels:
+                    requested = config.get("fit_channels") or ([int(config["ec_point_id"].split(":")[-2])]
+                                                              if config.get("ec_point_id") else None)
+                    if requested and not set(requested) <= set(selected_channels):
+                        names = "、".join(f"CH{ch}" for ch in selected_channels)
+                        raise ValueError(f"当前输入选定了 {names}；请选择这些通道，或更换输入范围")
+                    config["fit_channels"] = selected_channels if not requested else requested
+                selected_stems = selected_scope.get("stems")
+                if selected_stems:
+                    if config.get("only") and not set(config["only"]) <= set(selected_stems):
+                        raise ValueError("所选文件不在当前输入范围内，请更换输入范围")
+                    config["only"] = config.get("only") or selected_stems
+                    energy = config.get("energy_key") or (config.get("ec_point_id") or "").split(":")[2:3]
+                    energy = energy[0] if isinstance(energy, list) and energy else energy
+                    if energy and not any(stem.startswith(energy) for stem in selected_stems):
+                        raise ValueError("所选能线不在当前输入范围内，请更换输入范围")
+            if layer in ("TB_L2", "EC_L3") and config.get("fit_channels") and layer in state["dirty_layers"]:
+                pending = state.get("dirty_scopes", {}).get(layer) or {}
+                required_channels = pending.get("channels")
+                if required_channels is None:
+                    required_channels = photopeak_channels(_response_payload(state))
+                config["fit_channels"] = sorted(set(config["fit_channels"]) | set(required_channels))
             if layer == "EC_L2" and state.get("pending_ec_l0"):
                 pending = state["pending_ec_l0"]
                 if config.get("ec_point_id") or config.get("energy_key"):
@@ -1296,6 +1364,7 @@ class Workbench:
                 "tb_version": copy.deepcopy(selected if layer.startswith("EC_") else state["tb_version"]),
                 "acquisition": copy.deepcopy(state.get("acquisition")),
                 "acquisition_preset": copy.deepcopy(state.get("acquisition_preset")),
+                "input_bindings": copy.deepcopy(state.get("input_bindings", {}).get(layer, {})),
                 "error": None,
             }
             if layer == "EC_L3":
@@ -1421,6 +1490,11 @@ class Workbench:
         output = job_root / "products"
         write(job_root / "config.json", job["config"])
         try:
+            from .layer_products import normalize_tb_aliases, tb_aliases
+
+            profile = (load_profile(job["acquisition"])
+                       if job["layer"].startswith("TB_") and job.get("acquisition") else {})
+            aliases = tb_aliases(profile)
             if job["layer"] in ("EC_L1", "EC_L2"):
                 self.verify_tb(job["tb_version"])
             # Each attempt has isolated inputs and outputs, including failed attempts.
@@ -1434,13 +1508,14 @@ class Workbench:
                 ):
                     if (job["layer"] == "TB_L1" and job["config"].get("only")
                             and src.name.endswith("_fit_results.l1.json")
-                            and src.name.removesuffix("_fit_results.l1.json") not in job["config"]["only"]):
+                            and aliases.get(src.name.removesuffix("_fit_results.l1.json"),
+                                            src.name.removesuffix("_fit_results.l1.json")) not in job["config"]["only"]):
                         continue
                     target = output / src.relative_to(root / "products")
                     target.parent.mkdir(parents=True, exist_ok=True)
                     shutil.copy2(src, target)
             input_layer = {"TB_L1": "TB_L0", "EC_L1": "EC_L0", "EC_L2": "EC_L1"}.get(job["layer"])
-            if input_layer:
+            if input_layer and not job.get("input_bindings", {}).get("data"):
                 for src in (layer_dir(root / "products", state["payload"], input_layer) / "parquet").glob(
                     "*.parquet"
                 ):
@@ -1450,24 +1525,52 @@ class Workbench:
                     target = output / src.relative_to(root / "products")
                     target.parent.mkdir(parents=True, exist_ok=True)
                     shutil.copy2(src, target)
-            job_adapter = self.adapter_for({**state, "acquisition": job.get("acquisition")})
+            job_adapter = copy.copy(self.adapter_for({**state, "acquisition": job.get("acquisition")}))
+            normalize_tb_aliases(output, state["payload"], profile)
+            self._prepare_layer_inputs(state, job, output)
+            if job.get("input_bindings", {}).get("data"):
+                binding = job["input_bindings"]["data"]
+                job_adapter.explicit_input_layers = {binding["layer"]}
+                job_adapter.input_layer_roots = {binding["layer"]: binding["frozen_root"]}
             native = (getattr(job_adapter, "acquisition", None) or {}).get("analysis_contract") == "cali_proc@0.5"
             if native and job["layer"] in ("TB_L1", "EC_L2"):
                 family = "tb" if job["layer"] == "TB_L1" else "ec"
                 for node in (root / "products" / state["payload"] / family / "L1").glob("*"):
                     if node.is_dir() and (node / "points.json").is_file():
                         shutil.copytree(node, output / node.relative_to(root / "products"), dirs_exist_ok=True)
+            if native and job["layer"] in ("TB_L2", "EC_L3"):
+                family = "tb" if job["layer"] == "TB_L2" else "ec"
+                for node in (root / "products" / state["payload"] / family / "L2").glob("*"):
+                    if node.is_dir() and node.name not in ("json", "figures", "check"):
+                        for source in node.glob("*.json"):
+                            target = output / source.relative_to(root / "products")
+                            target.parent.mkdir(parents=True, exist_ok=True)
+                            shutil.copy2(source, target)
             target_dir = output / state["payload"] if native else layer_dir(output, state["payload"], job["layer"])
             before = {str(p): (p.stat().st_size, p.stat().st_mtime_ns) for p in target_dir.rglob("*") if p.is_file()}
+            job["computational_key"], reusable = self._computation_identity(state, job, output, getattr(job_adapter, "acquisition", {}))
             with (job_root / "processor.log").open("w", encoding="utf-8") as log:
                 with contextlib.redirect_stdout(log), contextlib.redirect_stderr(log):
-                    result = job_adapter.execute(
-                        state["payload"],
-                        job["layer"],
-                        output,
-                        job["config"],
-                        Path(job["tb_version"]["path"]) if job.get("tb_version") else None,
-                    )
+                    if reusable and all((root / "jobs" / reusable["id"] / "products" / item["path"]).is_file()
+                                        for item in reusable["outputs"]):
+                        current = {item["path"]: item.get("sha256") for item in state.get("generated", {}).get(job["layer"], [])}
+                        job["reuse_unchanged"] = all(current.get(item["path"]) == item.get("sha256")
+                                                    for item in reusable["outputs"])
+                        for item in reusable["outputs"]:
+                            source = root / "jobs" / reusable["id"] / "products" / item["path"]
+                            target = output / item["path"]
+                            target.parent.mkdir(parents=True, exist_ok=True)
+                            if target.is_symlink():
+                                target.unlink()
+                            shutil.copy2(source, target)
+                        job["reused_from"] = reusable["id"]
+                        result = copy.deepcopy(reusable["result"])
+                        print(f"复用已有结果：{reusable['id']}")
+                    else:
+                        result = job_adapter.execute(
+                            state["payload"], job["layer"], output, job["config"],
+                            Path(job["tb_version"]["path"]) if job.get("tb_version") else None,
+                        )
             result["acquisition"] = job.get("acquisition")
             if job["layer"] == "EC_L3" and job.get("ec_coverage", {}).get("mixed"):
                 result.setdefault("warnings", []).append(job["ec_coverage"]["description"])
@@ -1479,6 +1582,8 @@ class Workbench:
                 for p in target_dir.rglob("*")
                 if p.is_file() and before.get(str(p)) != (p.stat().st_size, p.stat().st_mtime_ns)
             ]
+            if job.get("reused_from"):
+                changed = [output / item["path"] for item in reusable["outputs"]]
             if not result.get("success", False) and not result.get("partial", False):
                 raise RuntimeError(json.dumps(clean(result.get("errors") or result), ensure_ascii=False))
             if not changed:
@@ -1491,6 +1596,8 @@ class Workbench:
                 rel = src.relative_to(output)
                 target = root / "products" / rel
                 target.parent.mkdir(parents=True, exist_ok=True)
+                if target.is_symlink():
+                    target.unlink()
                 shutil.copy2(src, target)
                 generated.append({"path": str(rel.as_posix()), "sha256": digest(src), "job_id": job_id})
             if result.get("partial"):
@@ -1593,17 +1700,7 @@ class Workbench:
                     ]
                     if state["pending_ec_windows"]:
                         dirty.add("EC_L2")
-                downstream = {
-                    "TB_L0": ("TB_L1", "TB_L2", "EC_L1", "EC_L2", "EC_L3"),
-                    "TB_L1": ("TB_L2", "EC_L1", "EC_L2", "EC_L3"),
-                    "TB_L2": ("EC_L1", "EC_L2", "EC_L3"),
-                    "EC_L0": ("EC_L1", "EC_L2", "EC_L3"),
-                    "EC_L1": ("EC_L2", "EC_L3"),
-                    "EC_L2": ("EC_L3",),
-                }
-                affected = set(downstream.get(layer, ()))
-                if layer.startswith("TB_") and state.get("tb_binding") == "pinned":
-                    affected.difference_update(("EC_L1", "EC_L2", "EC_L3"))
+                affected = set() if job.get("reuse_unchanged") else self._job_downstream(state, job)
                 dirty.update(affected)
                 if job.get("acquisition"):
                     suffix = {
@@ -1650,6 +1747,10 @@ class Workbench:
                                 f"{state['payload']}/ec/L2/json/{energy}_fit_results.l2.json", None)
                     state["acquisition_pending_layers"] = sorted(pending)
                 state["dirty_layers"] = sorted(dirty)
+                if job["status"] == "succeeded":
+                    self.layer_product_catalog.invalidate()
+                    state.setdefault("dirty_scopes", {}).pop(layer, None)
+                    state.setdefault("adopted_results", {}).pop(layer, None)
                 if layer == "TB_L2":
                     files = [o for o in job["outputs"] if o["path"].endswith("_TB.l2.json")]
                     if files:
@@ -1703,12 +1804,13 @@ class Workbench:
             state["updated_at"] = now()
             write(job_root / "job.json", job)
             self.save(state)
+        self._advance_update_chain(run_id)
 
     @staticmethod
     def _compact_job(job):
         result = job.get("result") or {}
         processor = result.get("processor") or {}
-        compact = {key: value for key, value in job.items() if key not in ("config", "result", "validation")}
+        compact = {key: value for key, value in job.items() if key not in ("config", "result", "validation", "input_bindings")}
         compact["config"] = {key: value for key, value in job.get("config", {}).items()
                              if key in ("only", "fit_channels", "representative", "ec_point_id", "bin_width", "energy_key")}
         if "result" in job:
@@ -1827,7 +1929,8 @@ class Workbench:
             return clean(
                 {**empty, "baseline": empty, "files": [files[key] for key in sorted(files)], "dirty": False}
             )
-        result = adapter.surface(state["payload"], root / "products", channel)
+        products = self._products_for_layer(state, layer, channel) if state.get("input_bindings", {}).get(layer, {}).get("data") else root / "products"
+        result = adapter.surface(state["payload"], products, channel)
         result["baseline"] = adapter.surface(state["payload"], root / "baseline", channel)
         result["files"] = [
             {"stem": stem}
@@ -1855,11 +1958,13 @@ class Workbench:
         if channel not in range(4):
             raise ValueError("channel 必须为 0—3")
 
-    def spectrum(self, run_id, stem, channel=0, layer="TB_L1"):
+    def spectrum(self, run_id, stem, channel=0, layer="TB_L1", consumer_layer=None):
         self._channel(channel)
         state = self.read(run_id)
-        result = self.adapter_for(state).spectrum(
-            state["payload"], self.root(run_id) / "products", stem, channel, layer=layer
+        adapter = copy.copy(self.adapter_for(state))
+        adapter.prefer_saved_tb = consumer_layer == "TB_L2"
+        result = adapter.spectrum(
+            state["payload"], self._products_for_layer(state, consumer_layer or layer, channel), stem, channel, layer=layer
         )
         result["stem"], result["channel"] = stem, channel
         result["draft_window"] = state["config"]["windows"].get(stem, {}).get(str(channel))
@@ -1950,8 +2055,9 @@ class Workbench:
                     "ec_dependency": state.get("ec_dependency"),
                 }
             )
-        result = ECInspector(adapter).overview(state["payload"], self.root(run_id) / "products", channel,
-                                               points=self._ec_points(state, channel, adapter))
+        products = self._products_for_layer(state, layer, channel)
+        result = ECInspector(adapter).overview(state["payload"], products, channel,
+                                               points=self._ec_points(state, channel, adapter, products))
         for point in result["points"]:
             point["actual_used"] = point.get("used", False)
             point["excluded"] = point["id"] in state["config"].get("ec_excluded", [])
@@ -1965,25 +2071,26 @@ class Workbench:
         result["ec_dependency"] = state.get("ec_dependency")
         return clean(result)
 
-    def ec_spectrum(self, run_id, layer, channel=0, stem=None, point_id=None):
+    def ec_spectrum(self, run_id, layer, channel=0, stem=None, point_id=None, consumer_layer=None):
         self._channel(channel)
         state = self.read(run_id)
         adapter = self.adapter_for(state)
+        products = self._products_for_layer(state, consumer_layer or layer, channel)
         if layer in ("EC_L0", "EC_L1"):
             result = adapter.ec_spectrum(
                 state["payload"],
-                self.root(run_id) / "products",
+                products,
                 layer,
                 channel,
                 stem=stem,
                 preferred_stems=state.get("inventory", {}).get("representative", {}).get("ec_stems", []),
             )
         elif layer in ("EC_L2", "EC_L3") and point_id:
-            point = next((item for item in self._ec_points(state, channel, adapter) if item["id"] == point_id), None)
+            point = next((item for item in self._ec_points(state, channel, adapter, products) if item["id"] == point_id), None)
             if point is None:
                 raise FileNotFoundError("能线不存在，请刷新源峰配置")
             result = ECInspector(adapter).spectrum(
-                state["payload"], self.root(run_id) / "products", point_id, channel, point=point,
+                state["payload"], products, point_id, channel, point=point,
             )
             result["draft_window"] = state["config"].get("ec_windows", {}).get(point_id) or point.get("draft_window")
             result["excluded"] = point_id in state["config"].get("ec_excluded", [])
@@ -2044,6 +2151,8 @@ class Workbench:
             hist = adapter.historical_layer(payload, layer)
             generated = {a["path"] for a in state["generated"].get(layer, [])}
             files = [p for p in hist.rglob("*") if p.is_file()]
+            if layer == "EC_L1":
+                files = [p for p in files if p.name.endswith("_corr.l1.parquet")]
             recent = next((j for j in reversed(state["jobs"]) if j["layer"] == layer), None)
             purpose, input_text, output_text = PURPOSES[layer]
             stages[layer] = {
@@ -2074,9 +2183,10 @@ class Workbench:
                     if source == "run" and not path.is_file():
                         continue
                     rel = path.relative_to(source_root).as_posix()
-                    computed = source == "run" and rel in generated
+                    computed = source == "run" and rel in generated and not any(
+                        item.get("source") == "adopted" and item["path"] == rel for item in state["generated"].get(layer, []))
                     # Seeded JSON snapshots are inputs, never current computation artifacts.
-                    if source == "run" and not computed:
+                    if source == "run" and rel not in generated:
                         continue
                     artifacts.append(
                         {
@@ -2098,6 +2208,7 @@ class Workbench:
             artifacts=artifacts,
             dependency_stale=self.stale(state),
             selected_tb=self.selected_tb(state),
+            layer_inputs=self.layer_input_summaries(state),
             ec_coverage=self.ec_coverage(state),
             scientific_notes=[
                 *state.get("import_warnings", []),
@@ -2120,6 +2231,9 @@ class Workbench:
                 "TB 与 EC 的谱密度分别为 Counts/ADC 和 Counts/(s·ADC)，曝光依据原生 timestamp1。",
             ]
         if compact:
+            state["input_bindings"] = {layer: {key: summary(value) for key, value in slots.items()}
+                                       for layer, slots in state.get("input_bindings", {}).items()}
+            state["adopted_results"] = {layer: summary(value) for layer, value in state.get("adopted_results", {}).items()}
             state["jobs"] = [self._compact_job(job) for job in state["jobs"]]
             state["revisions"] = [{key: value for key, value in revision.items() if key != "config"}
                                   for revision in state.get("revisions", [])]

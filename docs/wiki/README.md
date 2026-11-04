@@ -4,9 +4,10 @@
 
 | 页面 | 内容 |
 | --- | --- |
-| [教程首页](Home.md) | 阅读顺序、首次跑通、数据 / 预设 / 试算 / TB 包的关系 |
+| [教程首页](Home.md) | 阅读顺序、首次跑通、数据 / 预设 / 任务 / TB 包的关系 |
 | [安装与连接](Server-Setup.md) | 个人服务器环境、共享目录软链接、服务、SSH 转发和更新 |
 | [数据与预设](Data-and-Presets.md) | 目录、载荷、XML、换算、文件规则、四份 YAML 与版本复用 |
+| [分层输入与结果复用](https://github.com/Lee-Eee-Eee/GRID_Calibration_Lab/blob/feat/calibration-workbench/docs/layer_inputs.md) | 三类来源、局部输入、采用结果与依赖更新 |
 | [TB 温偏标定](TB-Calibration.md) | 解包、通道、拖窗、局部拟合、曲面、三维残差与屏蔽恢复 |
 | [EC 能量标定](EC-Calibration.md) | 选择 TB 包、校正、多峰、Co60 联合拟合、刻度和分辨率 |
 | [复核与结果](Review-and-Results.md) | 保存、比较、JSON / 图预览、运行记录及重开恢复 |
