@@ -16,9 +16,10 @@
     <a class="brand" href="/" aria-label="天格 GRID 标定工作台首页"><img class="brand-logo" src="/static/brand/grid-logo.svg" width="96" height="48" alt="天格计划 GRID"><h1 class="product-name">标定工作台</h1></a>
     <div class="run-controls">
       <div class="task-controls" role="group" aria-label="标定任务">
+<div class="payload-control"><label for="payload">载荷</label><select id="payload"><option value="14B">14B</option><option value="15B">15B</option></select></div>
         <label for="run-select" class="sr-only">标定任务</label>
         <select id="run-select"><option value="">选择标定任务</option></select>
-        <button id="new-run" class="button" title="沿用当前数据与读取预设创建标定任务">创建标定任务</button>
+        <button id="new-run" class="button" title="沿用当前数据与读取预设创建标定任务">新建任务</button>
       </div>
       <div class="tools-menu">
         <button id="toggle-workspace-tools" class="button tools-toggle" type="button" aria-controls="workspace-tools" aria-expanded="false">工具 <svg class="ui-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.25" aria-hidden="true"><path d="m4 6 4 4 4-4"/></svg></button>
@@ -32,12 +33,8 @@
     </div>
   </header>
 
-  <aside class="sidebar" aria-label="标定流程导航">
-    <div class="sidebar-title">标定流程</div>
-    <div class="sidebar-selects">
-      <div><label for="payload">载荷</label><select id="payload"><option value="14B">14B</option><option value="15B">15B</option></select></div>
-      <div><label for="channel">分析通道</label><select id="channel"><option value="0">CH 0</option><option value="1">CH 1</option><option value="2">CH 2</option><option value="3">CH 3</option></select></div>
-    </div>
+  <aside class="sidebar" aria-label="标定数据处理流程">
+    <div class="sidebar-title">处理流程</div>
     <nav id="stage-nav" aria-label="TB 与 EC 处理步骤"></nav>
     <div class="sidebar-footer"><div class="connection-line"><span class="connection-dot"></span><span id="connection-label">正在连接</span></div></div>
   </aside>
@@ -51,32 +48,19 @@
       <div id="run-workspace" hidden>
         <section class="stage-card" aria-label="当前处理层">
           <div class="stage-title-row">
-            <div class="stage-title"><span id="stage-number" class="stage-number">L2</span><h2 id="stage-title">TB 温度–偏压曲面</h2></div>
-            <div class="stage-actions"><label id="run-scope-label" for="run-scope" class="sr-only">计算范围</label><select id="run-scope"><option value="representative">代表样例</option><option value="full">全部数据</option></select><button id="run-layer" class="button primary">运行本层</button><details class="pipeline-menu"><summary>更多操作</summary><div><button id="run-pipeline" class="button" title="依次运行 TB L0—L2、EC L0—L3">运行代表闭环</button></div></details></div>
+            <div class="stage-title"><span id="stage-number" class="stage-number">L2</span><h2 id="stage-title">TB 温度–偏压曲面</h2><span id="stage-status" class="badge neutral">未运行</span></div>
+            <div class="stage-actions"><div class="channel-control"><label for="channel">通道</label><select id="channel"><option value="0">CH 0</option><option value="1">CH 1</option><option value="2">CH 2</option><option value="3">CH 3</option></select></div><label id="run-scope-label" for="run-scope" class="sr-only">计算范围</label><select id="run-scope"><option value="representative">代表样例</option><option value="full">全部数据</option></select><button id="run-layer" class="button primary">运行本层</button><details id="stage-menu" class="stage-options-menu"><summary class="icon-button" aria-label="处理层操作" title="处理层操作"><svg class="ui-icon" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><circle cx="3" cy="8" r="1.25"/><circle cx="8" cy="8" r="1.25"/><circle cx="13" cy="8" r="1.25"/></svg></summary><div class="stage-options"><button id="show-stage-info" type="button">输入与处理信息</button><div id="layer-result-menu" hidden><button id="choose-layer-result" type="button">采用已有结果…</button></div><button id="run-pipeline" type="button" title="依次运行完整处理链">运行代表闭环</button></div></details></div>
           </div>
           <div id="layer-inputs" class="layer-inputs" aria-label="本层输入" hidden></div>
           <div class="stage-status-row">
-            <span id="stage-status" class="badge neutral">未运行</span>
             <span id="run-state" class="badge neutral">尚未创建任务</span>
             <button id="update-affected-layers" type="button" class="button small" hidden>更新受影响层</button>
-            <details id="layer-result-menu" class="layer-result-menu" hidden><summary id="layer-result-label">结果</summary><div><button id="choose-layer-result" type="button" class="button small">采用已有结果…</button></div></details>
+
           </div>
-          <details class="stage-contract"><summary>计算详情</summary>
-            <p id="stage-description" class="stage-purpose"></p>
-            <div class="stage-detail-status"><span class="status-pair"><span class="meta-label">格式检查</span><span id="validation-status" class="badge neutral">尚未检查</span></span><span id="validation-detail" class="validation-detail"></span><span id="stage-counts" class="stage-counts"></span><span id="acquisition-indicator" class="badge neutral" hidden></span></div>
-            <div class="stage-meta"><div><span class="meta-label">输入</span><span id="stage-input"></span></div><div><span class="meta-label">输出</span><span id="stage-output"></span></div><div><span class="meta-label">依赖</span><span id="stage-dependency"></span></div></div>
-          </details>
+
         </section>
 
-        <section id="unpack-workspace" class="panel unpack-workspace" aria-label="L0 解包操作" hidden>
-          <div class="unpack-setup">
-            <div class="unpack-step"><span class="step-index">1</span><div><h3>数据来源</h3><p id="unpack-source" class="path-summary"></p><button id="unpack-data" class="text-button">选择数据 / 产品目录</button></div></div>
-            <div class="unpack-step"><span class="step-index">2</span><div><h3>解包设置</h3><p id="unpack-profile"></p><button id="unpack-settings" class="text-button">配置 XML、字段与文件规则</button></div></div>
-          </div>
-          <div class="unpack-input"><div class="unpack-step"><span class="step-index">3</span><div class="unpack-file-field"><label for="unpack-file">选择输入文件</label><div class="unpack-file-picker"><input id="unpack-search" type="search" placeholder="筛选文件名…" aria-label="筛选解包文件"><select id="unpack-file" aria-label="解包输入文件"></select></div></div></div><div id="unpack-files" class="unpack-file-paths"></div></div>
-          <div class="unpack-execute"><div><p id="unpack-action-hint"></p><small id="unpack-output"></small></div><div class="unpack-buttons"><button id="unpack-all" class="button">批量解包…</button><button id="unpack-selected" class="button primary">解包选中文件</button></div></div>
-          <div id="unpack-progress" class="unpack-progress" role="status" aria-live="polite" hidden></div>
-        </section>
+
         <div id="dependency-banner" class="dependency-banner" hidden></div>
         <details id="dependency-toolbar" class="dependency-toolbar" hidden><summary><span>TB 校正参数</span><span id="dependency-summary"></span><span class="disclosure-action">更换</span></summary><div class="dependency-controls"><label for="tb-version-select" class="sr-only">TB L2 校正参数</label><select id="tb-version-select"><option value="">正在读取参数包…</option></select><button id="apply-tb-version" class="button small">采用此版本</button><span id="tb-binding-state"></span><details class="tb-import"><summary>导入参数包</summary><div class="path-input"><input id="tb-import-path" aria-label="TB L2 JSON 完整路径" placeholder="TB L2 JSON 完整路径"><button id="import-tb-version" class="button small">导入并采用</button></div></details></div></details>
         <details id="l1-quality-overview" class="panel l1-quality-overview" aria-labelledby="l1-quality-title" hidden>
@@ -85,11 +69,7 @@
           <p id="l1-quality-note" class="plot-caption"></p>
           <details id="l1-quality-unlocated" class="l1-quality-unlocated" hidden><summary>缺少实测坐标的工况</summary><div id="l1-quality-unlocated-list"></div></details>
         </details>
-        <section id="ec-source-workbench" class="panel ec-source-workbench" aria-label="放射源多峰配置" hidden>
-          <div class="panel-heading"><div><h3>放射源能线</h3><p id="ec-source-caption"></p></div><span id="ec-source-channel" class="sr-only"></span></div>
-          <div class="ec-source-toolbar"><label for="ec-spectrum-select">源谱文件</label><select id="ec-spectrum-select"><option value="">选择放射源谱</option></select><label for="ec-source-name">放射源</label><input id="ec-source-name" aria-label="放射源名称" placeholder="例如 Na22"></div>
-          <div id="ec-source-editor" hidden><div class="table-wrap ec-peak-table-wrap"><table class="ec-peak-table"><thead><tr><th>能量 / keV</th><th>ADC 下限</th><th>ADC 上限</th><th title="可选的独立峰位参考">期望 ADC</th><th>状态</th><th></th></tr></thead><tbody id="ec-peak-rows"></tbody></table></div><div class="ec-source-actions"><button id="ec-add-line" class="button small">增添能线</button><button id="ec-view-full-source" class="button small" aria-pressed="false">显示整张谱</button><span id="ec-peak-save-status" role="status" class="muted-text"></span><button id="ec-save-lines" class="button small">保存配置</button><button id="ec-fit-source" class="button primary small">拟合全部能线</button></div></div>
-        </section>
+
         <section id="tb-analysis" class="analysis-grid">
           <aside id="l1-workbench" class="panel l1-files-panel" aria-label="L1 工况文件" hidden>
             <div class="l1-files-heading"><h3>工况文件</h3><span id="l1-file-position">—</span></div>
@@ -98,14 +78,15 @@
             <div class="l1-file-navigation"><button id="l1-prev" class="button small" aria-label="上一个工况文件" disabled>← 上一个</button><button id="l1-next" class="button small" aria-label="下一个工况文件" disabled>下一个 →</button></div>
             <div id="l1-progress" class="l1-batch-progress" role="status" aria-live="polite" hidden></div>
           </aside>
-          <div class="main-analysis">
+          <div id="main-analysis" class="main-analysis">
             <article class="panel surface-panel">
               <div class="panel-heading"><div><h3 id="main-chart-title">温度–偏压响应</h3><p id="surface-caption"></p></div><div class="chart-controls"><select id="surface-mode" aria-label="三维图显示量"><option value="response">峰位 + 残差连线</option><option value="residual">三维残差</option></select><select id="ec-axis-scale" aria-label="能量刻度坐标" hidden><option value="log">双对数坐标</option><option value="linear">线性坐标</option></select><span id="point-count" class="badge neutral">— 个工况</span></div></div>
+              <section id="unpack-workspace" class="unpack-workspace" aria-label="L0 解包操作" hidden><div class="unpack-toolbar"><label for="unpack-file" class="sr-only">输入文件</label><input id="unpack-search" type="search" placeholder="筛选文件…" aria-label="筛选解包文件"><select id="unpack-file" aria-label="解包输入文件"></select><button id="unpack-settings" type="button" class="button">读取设置</button><button id="show-unpack-info" type="button" class="button">文件信息</button><button id="unpack-all" type="button" class="button">批量解包…</button><button id="unpack-selected" type="button" class="button primary">解包选中文件</button></div><p id="unpack-action-hint" class="unpack-action-hint"></p><div id="unpack-progress" class="unpack-progress" role="status" aria-live="polite" hidden></div></section>
               <div id="surface-chart" class="chart surface-chart" aria-label="温度偏压响应三维图"></div>
               <div id="l1-spectrum-legend" class="chart-legend l1-spectrum-legend" aria-label="能谱曲线图例" hidden><span><i class="legend-line raw"></i><span id="observed-spectrum-label">计数谱</span></span><span><i class="legend-line fit"></i><span id="fitted-spectrum-label">峰 + 背景拟合</span></span><span><i class="legend-line background"></i>背景</span></div>
               <div id="main-chart-legend" class="chart-legend"><span><i class="legend-dot blue"></i>参与拟合</span><span><i class="legend-cross"></i>已屏蔽</span><span title="峰参数缺失或无效，暂无可参与拟合的参数"><i class="legend-dot grey"></i>无可用参数</span><span><i class="legend-ring"></i>选中点</span><span id="tb-version" class="version-label"></span></div>
             </article>
-            <section class="panel secondary-analysis" aria-label="残差与参数比较">
+            <section id="diagnostic-workspace" class="panel secondary-analysis" aria-label="残差与参数比较">
               <div class="analysis-tabs" role="tablist" aria-label="分析视图"><button id="analysis-tab-residual" role="tab" aria-selected="true" class="analysis-tab active" data-analysis-view="residual">拟合残差 <span id="residual-metric" class="metric-inline">—</span></button><button id="analysis-tab-comparison" role="tab" aria-selected="false" class="analysis-tab" data-analysis-view="comparison">参数比较</button><select id="ec-detail-mode" aria-label="EC 诊断量" hidden><option value="residual">刻度残差</option><option value="resolution">能量分辨率</option></select><button id="refit-tb" class="button small">重新拟合 TB</button></div>
               <div id="residual-panel"><div id="residual-chart" class="chart residual-chart" aria-label="各工况相对拟合残差"></div><div id="residual-caption" class="plot-caption"></div></div>
               <div id="comparison-panel" hidden><div id="parameter-table" class="table-wrap"></div><div id="fit-diagnostics" class="diagnostics"></div></div>
@@ -115,7 +96,7 @@
           <aside class="panel spectrum-panel" aria-label="工况详情与谱拟合">
             <div class="panel-heading inspector-heading"><h3 id="inspector-title">工况能谱</h3><span id="selected-channel" class="sr-only">CH 0</span></div>
             <div class="inspector-body">
-              <label id="point-field-label" class="field-label" for="point-select">工况文件</label><input id="peak-file-search" class="full-width peak-file-search" type="search" placeholder="筛选文件名或能量…" aria-label="筛选能线文件" hidden><select id="point-select" class="full-width"><option value="">选择工况</option></select><div id="peak-file-controls" class="peak-file-controls" hidden><button id="peak-file-prev" class="button small" disabled>← 上一个</button><span id="peak-file-position">—</span><button id="peak-file-next" class="button small" disabled>下一个 →</button></div>
+              <div id="point-selector-heading" class="point-selector-heading"><label id="point-field-label" class="field-label" for="point-select">工况文件</label><button id="show-ec-lines" type="button" class="button small" hidden>能线配置</button></div><input id="peak-file-search" class="full-width peak-file-search" type="search" placeholder="筛选文件名或能量…" aria-label="筛选能线文件" hidden><select id="point-select" class="full-width"><option value="">选择工况</option></select><div id="peak-file-controls" class="peak-file-controls" hidden><button id="peak-file-prev" class="button small" disabled>← 上一个</button><span id="peak-file-position">—</span><button id="peak-file-next" class="button small" disabled>下一个 →</button></div>
               <div id="point-condition" class="condition-row"></div>
               <section id="l1-channel-overview" class="l1-channel-overview" aria-label="当前文件的四通道拟合结果" hidden><div class="section-line"><h4>通道结果</h4></div><div id="l1-channel-summary" class="l1-channel-summary"></div></section>
               <div id="spectrum-chart" class="chart spectrum-chart" aria-label="L1 能谱与拟合曲线"></div>
@@ -214,5 +195,17 @@
     <p id="input-choice-error" class="scan-error" role="alert" hidden></p>
     <div class="input-choice-footer"><button id="import-input-tb" type="button" class="text-button" hidden>导入 TB 参数包</button><div><button id="cancel-layer-input" type="button" class="button">取消</button><button id="apply-layer-input" type="button" class="button" disabled>应用</button><button id="apply-update-layer-input" type="button" class="button primary" disabled>应用并更新</button></div></div>
   </dialog>
+
+  <dialog id="stage-info-dialog" class="stage-info-dialog" aria-labelledby="stage-info-title"><div class="dialog-title"><h2 id="stage-info-title">输入与处理信息</h2><button id="close-stage-info" type="button" class="icon-button" aria-label="关闭处理信息">×</button></div><div class="stage-info-body">
+            <p id="stage-description" class="stage-purpose"></p>
+            <div class="stage-detail-status"><span class="status-pair"><span class="meta-label">格式检查</span><span id="validation-status" class="badge neutral">尚未检查</span></span><span id="validation-detail" class="validation-detail"></span><span id="stage-counts" class="stage-counts"></span><span id="acquisition-indicator" class="badge neutral" hidden></span></div>
+            <div class="stage-meta"><div><span class="meta-label">输入</span><span id="stage-input"></span></div><div><span class="meta-label">输出</span><span id="stage-output"></span></div><div><span class="meta-label">依赖</span><span id="stage-dependency"></span></div></div>
+          <div class="info-result"><span>本层结果</span><strong id="layer-result-label">尚未计算</strong></div></div></dialog>
+  <dialog id="unpack-info-dialog" class="unpack-info-dialog" aria-labelledby="unpack-info-title"><div class="dialog-title"><h2 id="unpack-info-title">文件信息</h2><button id="close-unpack-info" type="button" class="icon-button" aria-label="关闭文件信息">×</button></div><dl class="unpack-info-grid"><div><dt>数据目录</dt><dd id="unpack-source"></dd></div><div><dt>读取配置</dt><dd id="unpack-profile"></dd></div></dl><div id="unpack-files" class="unpack-file-paths"></div><div id="unpack-output" class="unpack-output"></div><div id="unpack-metadata"></div><div class="dialog-actions"><button id="unpack-data" type="button" class="button">更换数据目录</button></div></dialog>
+  <dialog id="ec-lines-dialog" class="ec-lines-dialog" aria-labelledby="ec-lines-title"><div class="dialog-title"><h2 id="ec-lines-title">能线与 ADC 窗口</h2><button id="close-ec-lines" type="button" class="icon-button" aria-label="关闭能线配置">×</button></div>        <section id="ec-source-workbench" class="panel ec-source-workbench" aria-label="放射源多峰配置" hidden>
+          <div class="panel-heading"><div><p id="ec-source-caption"></p></div><span id="ec-source-channel" class="sr-only"></span></div>
+          <div class="ec-source-toolbar"><label for="ec-spectrum-select">源谱文件</label><select id="ec-spectrum-select"><option value="">选择放射源谱</option></select><label for="ec-source-name">放射源</label><input id="ec-source-name" aria-label="放射源名称" placeholder="例如 Na22"></div>
+          <div id="ec-source-editor" hidden><div class="table-wrap ec-peak-table-wrap"><table class="ec-peak-table"><thead><tr><th>能量 / keV</th><th>ADC 下限</th><th>ADC 上限</th><th title="可选的独立峰位参考">期望 ADC</th><th>状态</th><th></th></tr></thead><tbody id="ec-peak-rows"></tbody></table></div><div class="ec-source-actions"><button id="ec-add-line" class="button small">增添能线</button><button id="ec-view-full-source" class="button small" aria-pressed="false">显示整张谱</button><span id="ec-peak-save-status" role="status" class="muted-text"></span><button id="ec-save-lines" class="button small">保存配置</button><button id="ec-fit-source" class="button primary small">拟合全部能线</button></div></div>
+        </section></dialog>
 </body>
 </html>

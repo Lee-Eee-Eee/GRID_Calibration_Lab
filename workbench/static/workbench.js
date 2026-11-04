@@ -7,7 +7,7 @@ const layers = [
   { id: "TB_L1", title: "能谱峰拟合", heading: "TB 能谱峰拟合", description: "单高斯峰 + 单背景模型，复核窗口与峰位。", input: "TB L0 · 工况谱", output: "L1 拟合 JSON · 能谱图", dependency: "TB L0 + 当前窗口修订", process: "四种单背景模型择优，输出峰位及误差" },
   { id: "TB_L2", title: "曲面拟合", heading: "TB 温度–偏压曲面", description: "使用各工况峰位和误差，拟合五参数物理响应曲面。", input: "TB L1 · 峰位 / 误差", output: "L2 参数 JSON · 曲面图", dependency: "TB L1 + 当前屏蔽点", process: "按 center_err 加权拟合 G₀、k、V₀、b、c" },
   { id: "EC_L0", title: "原始数据解析", heading: "EC 原始数据解析", description: "解析 X 射线、放射源及背景数据，保存逐脉冲工况。", input: "X 射线 / 源 / 本底原始数据", output: "L0 Parquet · 逐脉冲 T / V", dependency: "原始事件与遥测", process: "读取真实能线数据，关联逐脉冲温度与偏压" },
-  { id: "EC_L1", title: "TB 响应校正", heading: "EC 温度–偏压校正", description: "显式记录本次使用的 TB 参数版本与校正依赖。", input: "EC L0 + 固定 TB L2 参数", output: "L1 校正谱 · tb_correction", dependency: "EC L0 + TB L2 版本", process: "校正至参考工况 25 °C / 28.5 V" },
+  { id: "EC_L1", title: "温偏校正", heading: "EC 温度–偏压校正", description: "显式记录本次使用的 TB 参数版本与校正依赖。", input: "EC L0 + 固定 TB L2 参数", output: "L1 校正谱 · tb_correction", dependency: "EC L0 + TB L2 版本", process: "校正至参考工况 25 °C / 28.5 V" },
   { id: "EC_L2", title: "能线峰拟合", heading: "EC 能线峰拟合", description: "拟合校正后的 X 射线与放射源能线，生成能量–峰位点。", input: "EC L1 · 校正谱", output: "L2 峰位 JSON · 能线拟合图", dependency: "EC L1 + 源能线配置", process: "单峰拟合、曝光归一化和本底处理" },
   { id: "EC_L3", title: "能量标定", heading: "EC 能量刻度与分辨率", description: "复用现行 E=f(ADC) 全局拟合；低 / 高能段当前使用同一组系数。", input: "EC L2 · 已知能量与峰位", output: "L3 标定 JSON · 分辨率图", dependency: "EC L2 + 对应 TB 版本", process: "现行 E=f(ADC) 全局二次拟合；方向与 wiki 分段规范有差异，详见算法说明" }
 ];
@@ -136,8 +136,6 @@ function renderUnpackWorkspace() {
   const dataset = state.run.dataset || {}, profile = state.run.acquisition, preset = state.run.acquisition_preset;
   $("unpack-source").textContent = dataset.raw_dir || state.run.raw_dir || (unpackRawInputs().length ? state.bootstrap?.defaults?.raw_dir || "工作区默认数据目录" : "仅载入产品 · 尚未选择原始数据");
   $("unpack-source").title = $("unpack-source").textContent;
-  const sourceParts = $("unpack-source").textContent.split(/[\\/]/).filter(Boolean);
-  if (sourceParts.length > 3) $("unpack-source").textContent = `${sourceParts[0]} / … / ${sourceParts.slice(-2).join(" / ")}`;
   $("unpack-profile").textContent = `${state.run.payload} · ${preset?.version ? `v${preset.version}` : "默认配置"}`;
   $("unpack-profile").title = `${preset?.name || "默认读取配置"}\n${profile?.sha256 || ""}`;
   $("unpack-output").textContent = `输出：runs/${state.run.id}/products/${state.run.payload}/${state.layer.startsWith("TB") ? "tb" : "ec"}/L0/`;
@@ -228,7 +226,9 @@ function renderLayerInputs() {
   holder.hidden = !summary; menu.hidden = !summary;
   if (!summary) return;
   clear(holder);
-  for (const slot of summary.slots || []) {
+  const slots = (summary.slots || []).filter(slot => slot.key !== "raw");
+  holder.hidden = !slots.length;
+  for (const slot of slots) {
     const selected = slot.selected, row = node("div", "layer-input-row"), source = node("span", "layer-input-source");
     row.append(node("span", "layer-input-label", slot.label || (slot.layer === "RAW" ? "原始数据" : layerDisplay(slot.layer))));
     if (slot.key === "raw") {
@@ -577,7 +577,7 @@ function renderDependencies() {
   if (unavailable) { banner.hidden = false; banner.textContent = unavailable; }
   else if (state.layer === "EC_L0") banner.hidden = true;
   const coverage = state.run.ec_coverage;
-  const details = $("ec-coverage-details"); details.hidden = !coverage?.sources?.length;
+  const details = $("ec-coverage-details"); details.hidden = !ecLayer || !coverage?.sources?.length;
   const holder = clear($("ec-coverage-list"));
   if (coverage?.sources?.length) {
     const table = node("table"); const head = node("tr");
@@ -1045,7 +1045,7 @@ function renderEcSourceConfig() {
     const actions = node("td", "ec-peak-actions"), choose = node("button", "text-button", "查看"), remove = node("button", "text-button", "移除");
     choose.setAttribute("aria-pressed", String(active));
     choose.type = remove.type = "button";
-    choose.addEventListener("click", handleError(() => selectEcPeakLine(index)));
+    choose.addEventListener("click", handleError(async () => { await selectEcPeakLine(index); if ($("ec-lines-dialog").open) $("ec-lines-dialog").close(); }));
     remove.addEventListener("click", () => { draft.lines.splice(index, 1); if(index <= state.ecPeakSelectedIndex) state.ecPeakSelectedIndex=Math.max(0,state.ecPeakSelectedIndex-1); ecPeakChanged(); renderEcSourceConfig(); });
     actions.append(choose, remove); row.append(actions); holder.append(row);
   }
@@ -1824,6 +1824,8 @@ function configureLayerPanels() {
   $("point-select").closest?.(".point-field")?.classList.toggle("l1-hidden",l1);
   $("point-select").hidden = l1;
   $("point-field-label").hidden = l1;
+  $("point-selector-heading").hidden = l1;
+  $("show-ec-lines").hidden = !ec2;
   $("analysis-tab-comparison").hidden = review;
   if (review) showAnalysisView("residual");
   $("fit-spectrum").textContent = "按当前窗口拟合";
@@ -1848,6 +1850,7 @@ function configureLayerPanels() {
   $("residual-caption").textContent = "";
   $("main-chart-legend").hidden = raw || review;
   const unpack = isUnpackLayer();
+  $(unpack ? "unpack-metadata" : "main-analysis").append($("diagnostic-workspace"));
   document.body.classList.toggle("l0-workspace", unpack);
   $("unpack-workspace").hidden = !unpack;
   for (const id of ["run-scope", "run-scope-label", "run-layer"]) $(id).hidden = unpack;
@@ -2472,7 +2475,7 @@ $("load-acquisition-preset").addEventListener("click", () => acquisitionLoadPres
 $("preview-acquisition").addEventListener("click", () => acquisitionPreview().catch(acquisitionError)); $("save-acquisition").addEventListener("click", () => acquisitionSave().catch(acquisitionError));
 $("profile-add-manifest").addEventListener("click", () => { acquisitionAppendManifest(); acquisitionMarkChanged(); }); $("profile-add-rule").addEventListener("click", () => { acquisitionAppendRule(); acquisitionMarkChanged(); }); $("profile-add-source").addEventListener("click", () => { acquisitionAppendSource(); acquisitionMarkChanged(); });
 $("profile-import-manifest").addEventListener("click", () => { try { const rows = acquisitionParseDelimited($("profile-manifest-import").value); clear($("profile-manifest-rows")); for (const row of rows) acquisitionAppendManifest(row); acquisitionMarkChanged(); acquisitionStatus(`已导入 ${rows.length} 组文件映射，请预览后保存。`); } catch (error) { acquisitionError(error); } });
-$("unpack-data").addEventListener("click", () => openCreateDialog());
+$("unpack-data").addEventListener("click", () => { $("unpack-info-dialog").close(); openCreateDialog(); });
 $("unpack-settings").addEventListener("click", () => acquisitionOpen().catch(acquisitionError));
 $("unpack-search").addEventListener("input", renderUnpackWorkspace);
 $("unpack-file").addEventListener("change", handleError(async (event) => { const point = unpackInputs().find(item => (item.id || item.stem) === event.target.value); if (point) await selectPoint(point); }));
@@ -2515,7 +2518,7 @@ $("ec-source-name").addEventListener("input",()=>{if(state.ecPeakDraft) {state.e
 $("ec-add-line").addEventListener("click",()=>{if(state.ecPeakDraft){state.ecPeakDraft.lines.push({energy_keV:null,windows:{},centers:{}});ecPeakChanged();renderEcSourceConfig();$("ec-peak-rows").querySelector("tr:last-child input")?.focus();}});
 $("ec-save-lines").addEventListener("click",handleError(()=>saveEcPeakConfig()));
 $("ec-fit-source").addEventListener("click",handleError(fitEcSource));
-$("ec-view-full-source").addEventListener("click",handleError(async()=>{state.ecFullSource=!state.ecFullSource;updateEcSourceControls();await renderSpectrum();}));
+$("ec-view-full-source").addEventListener("click",handleError(async()=>{state.ecFullSource=!state.ecFullSource;updateEcSourceControls();await renderSpectrum();if ($("ec-lines-dialog").open) $("ec-lines-dialog").close();}));
 $("fit-spectrum").addEventListener("click", handleError(fitSpectrum));
 $("auto-fit-spectrum").addEventListener("click", handleError(autoFitSpectrum));
 $("toggle-excluded").addEventListener("click", handleError(toggleExcluded));
@@ -2606,3 +2609,14 @@ $("toggle-workspace-tools").addEventListener("click", () => setWorkspaceTools($(
 $("workspace-tools").addEventListener("click", event => { if (event.target.closest("button")) setWorkspaceTools(false); });
 window.addEventListener("click", event => { if (!event.target?.closest?.(".tools-menu")) setWorkspaceTools(false); });
 window.addEventListener("keydown", event => { if (event.key === "Escape" && $("toggle-workspace-tools").getAttribute("aria-expanded") === "true") setWorkspaceTools(false, true); });
+
+
+// Supporting metadata opens deliberately, leaving the spectrum in the main workspace.
+for (const [trigger, dialog, close] of [["show-stage-info", "stage-info-dialog", "close-stage-info"], ["show-unpack-info", "unpack-info-dialog", "close-unpack-info"], ["show-ec-lines", "ec-lines-dialog", "close-ec-lines"]]) {
+  $(trigger).addEventListener("click", () => { $("stage-menu").open = false; $(dialog).showModal(); });
+  $(close).addEventListener("click", () => $(dialog).close());
+}
+$("stage-menu").addEventListener("click", event => { if (event.target.closest?.("button")) $("stage-menu").open = false; });
+$("stage-info-dialog").addEventListener("close", () => $("stage-menu").querySelector("summary").focus());
+window.addEventListener("click", event => { if (!event.target?.closest?.("#stage-menu")) $("stage-menu").open = false; });
+window.addEventListener("keydown", event => { if (event.key === "Escape" && $("stage-menu").open) { $("stage-menu").open = false; $("stage-menu").querySelector("summary").focus(); } });
