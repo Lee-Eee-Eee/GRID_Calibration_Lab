@@ -35,6 +35,10 @@ def tb_package(path: Path, origin="historical", *, required_channels=(0, 1, 2, 3
         if float(row["G0"]) <= 0 and not placeholder:
             raise ValueError("TB L2 的 G0 须大于零")
     sha = hashlib.sha256(path.read_bytes()).hexdigest()
+    companion = path.with_suffix(".meta.json")
+    metadata = json.loads(companion.read_text(encoding="utf-8")) if companion.is_file() else None
+    if metadata and metadata.get("model_sha256") != sha:
+        raise ValueError("TB 模型与配套 Meta 的哈希不一致")
     identity = hashlib.sha256((str(path) + sha).encode("utf-8")).hexdigest()[:20]
     return {
         "id": identity,
@@ -44,6 +48,7 @@ def tb_package(path: Path, origin="historical", *, required_channels=(0, 1, 2, 3
         "origin": origin,
         "label": path.name,
         "modified_at": path.stat().st_mtime,
+        **({"meta_path": str(companion), "schema": metadata.get("schema")} if metadata else {}),
     }
 
 
@@ -54,9 +59,18 @@ def snapshot(package: dict, run_root: Path) -> dict:
     target.parent.mkdir(parents=True, exist_ok=True)
     if not target.exists():
         shutil.copy2(source, target)
+    if package.get("meta_path"):
+        meta_source = Path(package["meta_path"])
+        meta_target = target.with_suffix(".meta.json")
+        if not meta_target.exists():
+            shutil.copy2(meta_source, meta_target)
+        elif meta_source.read_bytes() != meta_target.read_bytes():
+            raise ValueError("TB L2 快照的配套 Meta 已存在且内容不同")
     if hashlib.sha256(target.read_bytes()).hexdigest() != package["sha256"]:
         raise ValueError("TB L2 快照校验失败，请重新选择文件")
     frozen = {**package, "path": str(target), "source_path": package.get("source_path", str(source))}
+    if package.get("meta_path"):
+        frozen["meta_path"] = str(target.with_suffix(".meta.json"))
     (target.parent / "_package.json").write_text(
         json.dumps(frozen, ensure_ascii=False, indent=2), encoding="utf-8"
     )

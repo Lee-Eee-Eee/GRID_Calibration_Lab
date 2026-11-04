@@ -111,6 +111,8 @@ def make_handler(workbench):
                     return self._json(200, workbench.acquisition_defaults(query.get("profile", [None])[0]))
                 if path == "/api/acquisition/presets":
                     return self._json(200, workbench.acquisition_presets(query.get("payload", [None])[0]))
+                if path == "/api/workspace-index":
+                    return self._json(200, workbench.personal_index())
                 if len(parts) == 4 and parts[:3] == ["api", "acquisition", "presets"]:
                     return self._json(
                         200, workbench.acquisition_preset(parts[3], query.get("version", [None])[0])
@@ -121,6 +123,10 @@ def make_handler(workbench):
                     return self._file(workbench.workspace / "products", path[len("/api/history/") :])
                 if len(parts) >= 3 and parts[:2] == ["api", "runs"]:
                     run_id = parts[2]
+                    if len(parts) == 4 and parts[3] == "layer-inputs":
+                        return self._json(200, workbench.layer_inputs(run_id, query.get("layer", ["TB_L2"])[0]))
+                    if len(parts) == 5 and parts[3:] == ["updates", "preview"]:
+                        return self._json(200, workbench.preview_updates(run_id))
                     if len(parts) == 3:
                         return self._json(200, workbench.view(run_id, compact=query.get("compact") == ["1"]))
                     if len(parts) == 4 and parts[3] == "ec-peak-config":
@@ -160,6 +166,7 @@ def make_handler(workbench):
                                 query.get("stem", [""])[0],
                                 int(query.get("channel", [0])[0]),
                                 query.get("layer", ["TB_L1"])[0],
+                                consumer_layer=query.get("consumer_layer", [None])[0],
                             ),
                         )
                     if len(parts) == 4 and parts[3] == "ec-spectrum":
@@ -171,6 +178,7 @@ def make_handler(workbench):
                                 int(query.get("channel", [0])[0]),
                                 stem=query.get("stem", [None])[0],
                                 point_id=query.get("point_id", [None])[0],
+                                consumer_layer=query.get("consumer_layer", [None])[0],
                             ),
                             normalized=True,
                         )
@@ -187,6 +195,19 @@ def make_handler(workbench):
                         return self._file(workbench.root(run_id), "/".join(parts[4:]))
             if self.command == "POST":
                 body = self._body()
+                if len(parts) == 4 and parts[:2] == ["api", "runs"] and parts[3] == "updates":
+                    return self._json(200, workbench.start_updates(parts[2]))
+                if len(parts) in (4, 5) and parts[:2] == ["api", "runs"] and parts[3] == "layer-inputs":
+                    if len(parts) == 5 and parts[4] == "preview":
+                        return self._json(200, workbench.preview_layer_input(parts[2], body))
+                    if len(parts) == 4:
+                        return self._json(200, workbench.apply_layer_input(parts[2], body))
+                if path == "/api/contracts/profile":
+                    from ..common.cali_contract import build_acquisition_profile
+                    from .acquisition_store import prepare_profile
+                    profile = build_acquisition_profile(body["payload"], body["raw_dir"],
+                                                        source_payload=body.get("source_payload"))
+                    return self._json(200, {"profile": prepare_profile(workbench.workspace, profile)})
                 if path == "/api/sources/index":
                     return self._json(201, source_catalog.index(body.get("root"), body.get("label")))
                 if path == "/api/reference-spectra/analyze":

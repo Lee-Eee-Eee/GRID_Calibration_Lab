@@ -15,12 +15,12 @@
   <header class="topbar">
     <a class="brand" href="/" aria-label="天格 GRID 标定工作台首页"><img class="brand-logo" src="/static/brand/grid-logo.svg" width="96" height="48" alt="天格计划 GRID"></a>
     <div class="run-controls">
-      <label for="run-select" class="sr-only">试算</label>
-      <select id="run-select"><option value="">选择已保存试算</option></select>
+      <label for="run-select" class="sr-only">标定任务</label>
+      <select id="run-select"><option value="">选择标定任务</option></select>
       <button id="dataset-settings" class="button">选择数据 / 产品</button>
       <button id="acquisition-settings" class="button" disabled>解包与读取设置</button>
       <button id="reference-spectra" class="button">参考能谱</button>
-      <button id="new-run" class="button" title="沿用当前数据与读取预设创建独立试算">新建试算</button>
+      <button id="new-run" class="button" title="沿用当前数据与读取预设创建标定任务">创建标定任务</button>
       <button id="save-run" class="button" disabled>保存修订</button>
     </div>
   </header>
@@ -47,9 +47,12 @@
             <div class="stage-title"><span id="stage-number" class="stage-number">L2</span><h2 id="stage-title">TB 温度–偏压曲面</h2></div>
             <div class="stage-actions"><label id="run-scope-label" for="run-scope" class="sr-only">计算范围</label><select id="run-scope"><option value="representative">代表样例</option><option value="full">全部数据</option></select><button id="run-layer" class="button primary">运行本层</button><details class="pipeline-menu"><summary>更多操作</summary><div><button id="run-pipeline" class="button" title="依次运行 TB L0—L2、EC L0—L3">运行代表闭环</button></div></details></div>
           </div>
+          <div id="layer-inputs" class="layer-inputs" aria-label="本层输入" hidden></div>
           <div class="stage-status-row">
             <span id="stage-status" class="badge neutral">未运行</span>
-            <span id="run-state" class="badge neutral">尚未创建试算</span>
+            <span id="run-state" class="badge neutral">尚未创建任务</span>
+            <button id="update-affected-layers" type="button" class="button small" hidden>更新受影响层</button>
+            <details id="layer-result-menu" class="layer-result-menu" hidden><summary id="layer-result-label">结果</summary><div><button id="choose-layer-result" type="button" class="button small">采用已有结果…</button></div></details>
           </div>
           <details class="stage-contract"><summary>计算详情</summary>
             <p id="stage-description" class="stage-purpose"></p>
@@ -91,7 +94,7 @@
           </aside>
           <div class="main-analysis">
             <article class="panel surface-panel">
-              <div class="panel-heading"><div><h3 id="main-chart-title">温度–偏压响应</h3><p id="surface-caption"></p></div><div class="chart-controls"><select id="surface-mode" aria-label="三维图显示量"><option value="response">峰位 + 残差连线</option><option value="residual">三维残差</option></select><span id="point-count" class="badge neutral">— 个工况</span></div></div>
+              <div class="panel-heading"><div><h3 id="main-chart-title">温度–偏压响应</h3><p id="surface-caption"></p></div><div class="chart-controls"><select id="surface-mode" aria-label="三维图显示量"><option value="response">峰位 + 残差连线</option><option value="residual">三维残差</option></select><select id="ec-axis-scale" aria-label="能量刻度坐标" hidden><option value="log">双对数坐标</option><option value="linear">线性坐标</option></select><span id="point-count" class="badge neutral">— 个工况</span></div></div>
               <div id="surface-chart" class="chart surface-chart" aria-label="温度偏压响应三维图"></div>
               <div id="l1-spectrum-legend" class="chart-legend l1-spectrum-legend" aria-label="能谱曲线图例" hidden><span><i class="legend-line raw"></i><span id="observed-spectrum-label">计数谱</span></span><span><i class="legend-line fit"></i><span id="fitted-spectrum-label">峰 + 背景拟合</span></span><span><i class="legend-line background"></i>背景</span></div>
               <div id="main-chart-legend" class="chart-legend"><span><i class="legend-dot blue"></i>参与拟合</span><span><i class="legend-cross"></i>已屏蔽</span><span title="峰参数缺失或无效，暂无可参与拟合的参数"><i class="legend-dot grey"></i>无可用参数</span><span><i class="legend-ring"></i>选中点</span><span id="tb-version" class="version-label"></span></div>
@@ -149,16 +152,17 @@
           <details class="source-management"><summary>管理目录记录</summary><button type="button" id="index-source" class="button small">保存当前数据目录</button><p id="source-status" role="status" class="muted-text"></p></details>
         </section>
         <section class="dataset-run-section">
-          <h3>新建试算</h3>
+          <h3>创建标定任务</h3>
           <label for="dataset-select">数据集</label><select id="dataset-select"><option value="">选择数据集</option></select>
           <details class="dataset-location-details"><summary>目录详情</summary><div id="dataset-paths" class="dataset-paths"></div></details>
+          <div id="dataset-saved-runs" hidden><label for="dataset-run-select">已有任务</label><div class="path-input"><select id="dataset-run-select"></select><button type="button" id="dataset-open-run" class="button">继续</button></div></div>
           <label for="new-run-payload">载荷编号</label><input id="new-run-payload" maxlength="40" placeholder="例如：10B">
           <div class="dataset-preset-selection"><label for="dataset-preset">读取配置</label><select id="dataset-preset"><option value="">自动选择</option></select><label for="dataset-preset-version">版本</label><select id="dataset-preset-version"></select><p id="dataset-preset-summary" class="muted-text"></p></div>
-          <label for="new-run-name">试算名称</label><input id="new-run-name" maxlength="80" placeholder="例如：温偏标定">
+          <label for="new-run-name">任务名称</label><input id="new-run-name" maxlength="80" placeholder="例如：温偏标定">
         </section>
       </div>
       <p id="dataset-create-error" class="form-error" role="alert" hidden></p>
-      <div class="dialog-actions"><button type="button" id="cancel-new-run" class="button">取消</button><button type="submit" class="button primary">创建试算并载入</button></div>
+      <div class="dialog-actions"><button type="button" id="cancel-new-run" class="button">取消</button><button type="submit" class="button primary">创建任务并载入</button></div>
     </form>
   </dialog>
   <dialog id="unpack-batch-dialog" class="unpack-batch-dialog" aria-labelledby="unpack-batch-title"><div class="dialog-title"><h2 id="unpack-batch-title">批量解包</h2><button id="close-unpack-batch" class="icon-button" aria-label="关闭批量解包">×</button></div><p id="unpack-batch-summary"></p><div class="dialog-actions"><button id="cancel-unpack-batch" class="button">取消</button><button id="start-unpack-batch" class="button primary">解包全部文件</button></div></dialog>
@@ -166,7 +170,7 @@
   <dialog id="acquisition-dialog" class="acquisition-dialog" aria-labelledby="acquisition-title">
     <div class="acquisition-header"><div><h2 id="acquisition-title">解包设置</h2><p id="acquisition-identity" class="muted-text"></p><span id="acquisition-version" class="mono"></span></div><button id="close-acquisition" class="icon-button" aria-label="关闭读取配置">×</button></div>
     <div class="payload-preset-row"><label for="payload-preset-select">读取配置</label><select id="payload-preset-select"><option value="">尚未保存预设</option></select><label for="payload-preset-version">版本</label><select id="payload-preset-version"></select><button id="load-payload-preset" class="button small">载入编辑</button><button id="apply-payload-preset" class="button small">应用此版本</button><span id="payload-preset-current" class="muted-text"></span></div>
-    <div class="acquisition-tabs" role="tablist" aria-label="读取配置内容"><button id="acquisition-tab-xml" class="analysis-tab active" role="tab" aria-selected="true" data-acquisition-tab="xml">XML 与字段</button><button id="acquisition-tab-metadata" class="analysis-tab" role="tab" aria-selected="false" data-acquisition-tab="metadata">文件与工况</button><button id="acquisition-tab-preview" class="analysis-tab" role="tab" aria-selected="false" data-acquisition-tab="preview">检查配对</button></div>
+    <div class="acquisition-tabs" role="tablist" aria-label="读取配置内容"><button id="acquisition-tab-xml" class="analysis-tab active" role="tab" aria-selected="true" data-acquisition-tab="xml">XML 与字段</button><button id="acquisition-tab-metadata" class="analysis-tab" role="tab" aria-selected="false" data-acquisition-tab="metadata">文件与工况</button><button id="acquisition-tab-analysis" class="analysis-tab" role="tab" aria-selected="false" data-acquisition-tab="analysis">分析配置</button><button id="acquisition-tab-preview" class="analysis-tab" role="tab" aria-selected="false" data-acquisition-tab="preview">检查配对</button></div>
     <div class="acquisition-scroll">
       <details class="profile-template-menu"><summary>从模板新建</summary><div class="acquisition-preset-row"><label for="acquisition-preset">内置模板</label><select id="acquisition-preset"></select><button id="load-acquisition-preset" class="button small">载入模板</button></div></details>
       <details id="payload-preset-save-panel" class="profile-advanced preset-save-panel"><summary>保存配置版本</summary><div class="preset-save-fields"><label>预设名称<input id="payload-preset-name" maxlength="100" placeholder="例如：11B 实验室读取标准"></label><label>所属载荷<input id="payload-preset-payload" maxlength="80"></label><label class="preset-binding"><input id="payload-preset-bind" type="checkbox" checked>自动关联当前数据、产品目录</label></div><div class="preset-save-actions"><button id="save-payload-preset-as" class="button small" disabled>另存为新预设</button><button id="publish-payload-preset-version" class="button small" disabled>保存为新版本</button><span class="muted-text">检查配对后即可保存。</span></div></details>
@@ -187,10 +191,22 @@
         </section>
         <section class="profile-section"><div class="profile-section-heading"><h3>放射源能线</h3><button id="profile-add-source" class="button small">添加发射源</button></div><p class="acquisition-help">别名用于文件名识别；同一源的多条能线用逗号分隔，后续峰拟合使用此能量配置。</p><div class="profile-table-wrap"><table class="profile-edit-table source-table"><thead><tr><th>发射源</th><th>文件名别名</th><th>能线 / keV</th><th></th></tr></thead><tbody id="profile-source-rows"></tbody></table></div></section>
       </section>
+      <section id="acquisition-panel-analysis" class="acquisition-tab-panel" role="tabpanel" aria-labelledby="acquisition-tab-analysis" hidden><div class="profile-section-heading"><h3>cali_proc 配置</h3><div><select id="contract-source-payload" aria-label="配置载荷"><option>14B</option><option>15B</option></select><button id="load-contract-profile" class="button small">载入配置与文件表</button></div></div><div class="xml-editor-grid"><section class="profile-section"><h3>TB L1 · 选段与谱峰</h3><label for="contract-tb_l1">tb_l1.yaml</label><textarea id="contract-tb_l1" class="code-editor" spellcheck="false" aria-label="tb_l1.yaml"></textarea></section><section class="profile-section"><h3>TB L2 · 温偏响应</h3><label for="contract-tb_l2">tb_l2.yaml</label><textarea id="contract-tb_l2" class="code-editor" spellcheck="false" aria-label="tb_l2.yaml"></textarea></section><section class="profile-section"><h3>EC L1 · 校正与能线</h3><label for="contract-ec_l1">ec_l1.yaml</label><textarea id="contract-ec_l1" class="code-editor" spellcheck="false" aria-label="ec_l1.yaml"></textarea></section><section class="profile-section"><h3>EC L2 · 能量关系</h3><label for="contract-ec_l2">ec_l2.yaml</label><textarea id="contract-ec_l2" class="code-editor" spellcheck="false" aria-label="ec_l2.yaml"></textarea></section></div></section>
       <section id="acquisition-panel-preview" class="acquisition-tab-panel" role="tabpanel" aria-labelledby="acquisition-tab-preview" hidden><div class="profile-section-heading"><h3>文件配对</h3><span id="acquisition-preview-summary">修改配置后点击“预览与校验”</span></div><p class="acquisition-help">检查 Event / HK 配对及提取的温度、偏压和能量。</p><div id="acquisition-preview-messages" aria-live="polite"></div><div id="acquisition-preview-results" class="profile-table-wrap"><p class="empty-list">尚未预览当前草稿。</p></div></section>
     </div>
     <div class="acquisition-footer"><div class="acquisition-save-note"><label for="acquisition-reason">修订说明</label><input id="acquisition-reason" placeholder="例如：新载荷 XML 字段和温度标度调整"></div><div id="acquisition-status" role="status" aria-live="polite"></div><div class="acquisition-actions"><button id="cancel-acquisition" class="button">取消</button><button id="preview-acquisition" class="button">预览与校验</button><button id="save-acquisition" class="button primary" disabled>保存读取配置</button></div></div>
   </dialog>
   <dialog id="reference-dialog" class="reference-dialog" aria-labelledby="reference-title"><div class="dialog-title"><div><h2 id="reference-title">HPGe 参考能谱</h2></div><button id="close-reference" class="icon-button" aria-label="关闭参考能谱">×</button></div><div class="reference-location"><input id="reference-directory" aria-label="参考能谱目录" placeholder="留空载入迁移的 11B HPGe 数据"><button class="button small" data-browse-target="reference-directory">浏览</button><button id="scan-reference" class="button small">载入目录</button></div><div class="reference-layout"><aside><label for="reference-file">参考文件</label><select id="reference-file" size="14"></select><div id="reference-metadata" class="reference-metadata"></div></aside><section><div id="reference-chart" class="chart reference-chart"></div><div class="reference-analysis-actions"><button id="analyze-reference" class="button" disabled>分析寻峰候选</button><span id="reference-status" role="status"></span></div><div id="reference-analysis" class="reference-analysis"></div></section></div></dialog>
+  <dialog id="layer-input-dialog" class="layer-input-dialog" aria-labelledby="layer-input-title">
+    <div class="dialog-title"><h2 id="layer-input-title">选择输入</h2><button id="close-layer-input" type="button" class="icon-button" aria-label="关闭输入选择">×</button></div>
+    <div class="input-origin-tabs" role="tablist" aria-label="产品来源"><button type="button" role="tab" data-input-origin="shared" aria-selected="true">共享产品</button><button type="button" role="tab" data-input-origin="current" aria-selected="false">当前任务</button><button type="button" role="tab" data-input-origin="task" aria-selected="false">其他任务</button></div>
+    <div class="input-candidate-filters"><label class="sr-only" for="input-candidate-search">搜索产品</label><input id="input-candidate-search" type="search" placeholder="搜索名称或文件…"><label class="sr-only" for="input-task-filter">来源任务</label><select id="input-task-filter" aria-label="来源任务" hidden><option value="">全部任务</option></select></div>
+    <div id="input-candidate-list" class="input-candidate-list" aria-label="可用产品" aria-live="polite"></div>
+    <div id="input-candidate-details" class="input-candidate-details" hidden></div>
+    <details id="input-scope-panel" class="input-scope-panel" hidden><summary>选择文件与通道</summary><div class="input-scope-fields"><label>文件<select id="input-scope-observations" multiple size="5" aria-label="选用的文件"></select></label><fieldset id="input-channel-scope"><legend>通道</legend><div id="input-scope-channels"></div></fieldset></div></details>
+    <section id="input-impact" class="input-impact" aria-labelledby="input-impact-title" hidden><h3 id="input-impact-title">更新范围</h3><div id="input-impact-steps"></div></section>
+    <p id="input-choice-error" class="scan-error" role="alert" hidden></p>
+    <div class="input-choice-footer"><button id="import-input-tb" type="button" class="text-button" hidden>导入 TB 参数包</button><div><button id="cancel-layer-input" type="button" class="button">取消</button><button id="apply-layer-input" type="button" class="button" disabled>应用</button><button id="apply-update-layer-input" type="button" class="button primary" disabled>应用并更新</button></div></div>
+  </dialog>
 </body>
 </html>

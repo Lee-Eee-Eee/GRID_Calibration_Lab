@@ -1,0 +1,21 @@
+payload: 15B
+l1_config: tb_l1.yaml
+model:
+  method: leastsq
+  max_nfev: 100000
+  scale_covar: false
+  p0: [0.012, 0.0184, 24.11, 54.31, 23459.83]
+  p0_by_channel: {}
+  weights: 1/center_std
+  bias_min_filter: null
+  initial_defaults_source: legacy five-parameter temperature/bias response
+  covariance: unscaled
+qa:
+  redchi_warn: 2.0
+  redchi_fail: 5.0
+  on_fail: include
+exclude: []
+expected_input_measurements: 55
+result_slots: 4
+active_channels: [0, 1, 2, 3]
+null_channels: []

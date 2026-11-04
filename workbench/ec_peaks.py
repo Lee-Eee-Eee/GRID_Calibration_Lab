@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 import re
 
+from ..common.cali_contract import is_contract, source_peak_entries
 from ..common.spectral_models import photopeak_channels
 from ..common.utils import read_json, read_parquet_metadata
 from .acquisition import default_profile
@@ -130,13 +131,14 @@ def catalog(adapter, payload, product_root, *, profile=None, config=None):
     channels = list(photopeak_channels(identity))
     for path in _files(adapter, payload, product_root, "EC_L1", "parquet", "src_*_corr.l1.parquet"):
         match = SOURCE_FILE.fullmatch(path.name)
-        if not match or match["name"].lower() == "bkg":
-            continue
-        key, name = f"src_{match['name']}", match["name"]
         try:
             metadata = read_parquet_metadata(path, "tb_correction") or {}
         except (OSError, ValueError, TypeError):
             metadata = {}
+        name = metadata.get("source_name") or (match["name"] if match else None)
+        if not name or str(name).lower() == "bkg" or path.name.startswith("src_bkg_"):
+            continue
+        key = f"src_{name}"
         definition = definitions.get(_source_alias(name))
         explicit = preset_definitions.get(_source_alias(name))
         energies = (_energy_lines(explicit.get("energies_keV")) if explicit else
@@ -148,7 +150,7 @@ def catalog(adapter, payload, product_root, *, profile=None, config=None):
                                         "signal_file": path.name, "source_path": str(path), "source_files": [],
                                         "available_channels": channels, "origin": origin, "lines": [], "_records": []})
         entry["source_files"].append({"name": path.name, "path": str(path),
-                                      "exposure_minutes": metadata.get("exposure_minutes", float(match["minutes"]))})
+                                      "exposure_minutes": metadata.get("exposure_minutes", float(match["minutes"]) if match else None)})
         for energy in energies:
             if not any(_same_energy(row["energy_keV"], energy) for row in entry["lines"]):
                 entry["lines"].append({"energy_keV": energy, "windows": {}, "centers": {}, "origin": origin})
@@ -165,6 +167,10 @@ def catalog(adapter, payload, product_root, *, profile=None, config=None):
         entry = spectra.setdefault(key, {"energy_key": key, "source_name": key.removeprefix("src_"),
                                         "signal_file": None, "source_path": None, "source_files": [],
                                         "available_channels": channels, "origin": "result", "lines": [], "_records": []})
+        source_name = next((record.get("source_name") for record in records
+                            if isinstance(record, dict) and record.get("source_name")), None)
+        if source_name:
+            entry["source_name"] = source_name
         entry["_records"] = records
         for record in records:
             energies = _energy_lines([record.get("E")])
@@ -181,6 +187,21 @@ def catalog(adapter, payload, product_root, *, profile=None, config=None):
             lo, hi = record.get("lo"), record.get("hi")
             if isinstance(lo, (int, float)) and isinstance(hi, (int, float)) and math.isfinite(lo) and math.isfinite(hi) and 0 <= lo < hi:
                 line["windows"][channel] = {"lo": float(lo), "hi": float(hi)}
+    if is_contract(profile):
+        analyses = profile.get("analysis_config", {}).get("ec_l1", {}).get("source", {})
+        for entry in spectra.values():
+            configured = analyses.get(entry["source_name"])
+            if not configured:
+                continue
+            lines = []
+            for item in source_peak_entries(configured):
+                windows = {str(ch): {"lo": float(window[0]), "hi": float(window[1])}
+                           for ch, window in enumerate(item.get("fit_range", [])) if window is not None}
+                centers = {str(ch): float(center) for ch, center in enumerate(item.get("center_anchor", []))
+                           if center is not None}
+                lines.append({"energy_keV": item["energy_keV"], "windows": windows,
+                              "centers": centers, "origin": "preset"})
+            entry["lines"] = lines
     for key, saved in peak_sets.items():
         entry = spectra.setdefault(key, {"energy_key": key, "signal_file": None, "source_path": None,
                                         "source_files": [], "available_channels": channels, "_records": []})

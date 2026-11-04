@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from ...common.legacy_parser import parse_event_hk_to_dataframe
+from ...common.native_time import publish_native_input
 from ...common.utils import DataLayout, get_timestamp, write_json, write_parquet
 from ...config.payload_config import PayloadConfig
 
@@ -127,7 +128,9 @@ class ECL0Processor:
             raise ValueError(f"数据读取规则存在错误或歧义: {preview.get('errors', [])} {preview.get('ambiguous', [])}")
         rows = [dict(row) for row in preview["rows"] if row["kind"] in {"xray", "source", "background"}]
         for row in rows:
-            if row["kind"] == "xray":
+            if self.input_profile.get("analysis_contract") and row.get("stem"):
+                row["output_stem"] = row["stem"]
+            elif row["kind"] == "xray":
                 row["output_stem"] = f"{float(row['energy_keV']):g}keV_ch{int(row['channel'])}"
             else:
                 name = "bkg" if row["kind"] == "background" else row["source"]
@@ -164,12 +167,18 @@ class ECL0Processor:
                     event_tag="grid1x_ft_packet", hk_tag="hk_packet", include_per_point_tv=True,
                     input_profile=self.input_profile, xml_paths=self.xml_paths, observation=row,
                 )
+                publish_native_input(frame, metadata, self.layout.product_root, self.payload_name,
+                                     "ec", row.get("acquisition_id") or row.get("id") or stem)
+                if metadata.get("analysis_contract") and frame.empty:
+                    raise ValueError("清洗后无有效 SCI 事件；EXP 已保留解码与 CRC 证据")
                 parquet = self.layout.get_ec_l0_parquet(f"{stem}.l0.parquet")
-                write_parquet(parquet, frame, schema_metadata={"acquisition": metadata.get("acquisition", {})})
+                write_parquet(parquet, frame, schema_metadata={"acquisition": metadata.get("acquisition", {}),
+                              **({"native": metadata["native"]} if metadata.get("native") else {})})
                 output = {
                     "stem": stem, "parquet": parquet.name, "n_pulses": int(len(frame)),
                     "data_type": {"xray": "xray", "source": "source", "background": "source_bkg"}[row["kind"]],
                     "acquisition": metadata,
+                    "acquisition_id": row.get("acquisition_id") or row.get("id") or stem,
                 }
                 if row["kind"] == "xray":
                     output["energy"] = f"{float(row['energy_keV']):g}keV"

@@ -24,13 +24,14 @@ dependencies = [
     "numpy>=1.24",
     "pandas>=2.0",
     "pyarrow>=14.0",
-    "scipy>=1.11",
+    "scipy>=1.11,<1.19",
     "matplotlib>=3.7",
     "lmfit>=1.2",
     "h5py>=3.9",
     "crcmod>=1.7",
     "numba>=0.58",
     "addict>=2.4",
+    "PyYAML>=6.0",
 ]
 
 [project.optional-dependencies]
@@ -46,8 +47,9 @@ grid-calib = "calibration_lib.run_layer:main"
 grid-workbench = "calibration_lib.workbench.server:main"
 
 [project.urls]
-Homepage = "https://github.com/Lee-Eee-Eee/GRID_Calibration_Lib"
-Issues = "https://github.com/Lee-Eee-Eee/GRID_Calibration_Lib/issues"
+Homepage = "https://github.com/Lee-Eee-Eee/GRID_Calibration_Lab"
+Documentation = "https://github.com/Lee-Eee-Eee/GRID_Calibration_Lab/wiki"
+Issues = "https://github.com/Lee-Eee-Eee/GRID_Calibration_Lab/issues"
 
 # ── Build backend ────────────────────────────────────────────────────────
 # Treat the repository root as the package root: the package "calibration_lib"

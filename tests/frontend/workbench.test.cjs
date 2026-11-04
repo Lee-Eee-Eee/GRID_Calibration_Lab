@@ -74,6 +74,39 @@ test('the controller starts without decorative pipeline help paragraphs', () => 
   assert.doesNotThrow(() => controller({ absentSelectors: ['.pipeline-menu p'] }));
 });
 
+test('data selection lists matching personal trials and continues the chosen trial', async () => {
+  const ui = controller();
+  ui.run(`
+    registryDatasetSelection = async () => {};
+    state.datasets = [{id:'shared-15',payload:'15B',raw_dir:'/shared/15B',product_dir:'/shared/products/15B',personal_runs:[
+      {id:'old',name:'Original',products_dir:'/home/user/runs/old/products/15B',acquisition_preset:{version:1}},
+      {id:'new',name:'Doublet',products_dir:'/home/user/runs/new/products/15B',acquisition_preset:{version:2}}
+    ]}];
+    $('dataset-select').value = 'shared-15'; updateSelectedDataset();
+    state.opened = null; openRun = async id => { state.opened = id; };
+    $('dataset-run-select').value = 'new';
+  `);
+  assert.equal(ui.element('dataset-saved-runs').hidden, false);
+  assert.deepEqual(ui.element('dataset-run-select').options.map(row => row.text), ['Original · v1', 'Doublet · v2']);
+  await ui.element('dataset-open-run').listeners.click[0]();
+  assert.equal(ui.run('state.opened'), 'new');
+  assert.equal(ui.run('state.datasets[0].product_dir'), '/shared/products/15B');
+});
+
+test('refreshing personal trial versions preserves the current directory and payload draft', async () => {
+  const ui = controller();
+  await ui.run(`
+    state.datasets = [{id:'one',source_id:'source-15',raw_dir:'/shared/15B',product_dir:'/shared/products/15B'}];
+    $('dataset-select').value = 'one'; $('new-run-dialog').open = true;
+    $('new-run-payload').value = 'renamed-15'; $('dataset-raw-dir').value = '/shared/15B';
+    api = async () => ({runs:[{id:'v2-run',name:'Doublet',source_id:'source-15',products_dir:'/home/user/new',acquisition_preset:{version:2}}]});
+    refreshPersonalTrials();
+  `);
+  assert.equal(ui.element('dataset-run-select').options[0].text, 'Doublet · v2');
+  assert.equal(ui.element('new-run-payload').value, 'renamed-15');
+  assert.equal(ui.element('dataset-raw-dir').value, '/shared/15B');
+});
+
 test('TB layer switch while rendering cannot select a point from the old layer', async () => {
   const ui = controller();
   ui.run(`
@@ -106,6 +139,35 @@ test('EC layer switch while rendering cannot select an old energy point', async 
   ui.run(`state.layer = 'TB_L0'; ++state.loadToken; release.resolve();`);
   await ui.run('pending');
   assert.equal(ui.run('selected.length'), 0);
+});
+
+test('an explicit empty corr overview never treats native spectra.parquet as an event file', async () => {
+  const ui = controller();
+  ui.run(`state.layer='EC_L1';state.selected=[];state.calls=[];
+    artifactsForLayer=()=>[{name:'spectra.parquet',path:'15B/ec/L1/source/spectra.parquet'},{name:'old_corr.l1.parquet',path:'old_corr.l1.parquet'}];
+    renderEcSourceConfig=()=>{};selectEcPoint=async point=>state.selected.push(point.stem);
+    api=async path=>{state.calls.push(path);return {files:[],points:[]};};`);
+  await ui.run('loadEcAnalysis()');
+  assert.equal(ui.run('state.selected.length'), 0);
+  assert.equal(ui.run('state.point'), null);
+  assert.equal(ui.run('state.calls.some(path=>path.includes("/ec-spectrum"))'), false);
+});
+
+test('legacy corr overview fallback accepts only corrected event Parquet suffixes', async () => {
+  const ui = controller();
+  ui.run(`state.layer='EC_L1';state.selected=[];
+    artifactsForLayer=()=>[{name:'spectra.parquet'},{name:'raw.l0.parquet'},{name:'signal_corr.l1.parquet',path:'signal_corr.l1.parquet'}];
+    renderEcSourceConfig=()=>{};selectEcPoint=async point=>state.selected.push(point.stem);api=async()=>({});`);
+  await ui.run('loadEcAnalysis()');
+  assert.equal(ui.run('state.selected.join()'), 'signal');
+});
+
+test('an empty corr page disables current-file execution while keeping full-layer execution available', () => {
+  const ui = controller();
+  ui.run(`state.layer='EC_L1';state.point=null;$('run-scope').value='representative';productionSetBusy(false);`);
+  assert.equal(ui.element('run-layer').disabled, true);
+  ui.run(`$('run-scope').value='full';productionSetBusy(false);`);
+  assert.equal(ui.element('run-layer').disabled, false);
 });
 
 test('reversed channel responses retain the latest channel and file', async () => {
@@ -148,6 +210,26 @@ test('a surface refresh finishing after an explicit file selection preserves the
   assert.equal(ui.run('state.point.stem'), '101');
   assert.equal(ui.element('point-select').value, '14B:101:0');
   assert.equal(ui.run('savedView().familyStems.TB'), '101');
+});
+
+test('TB curve drilldown requests the selected L1 input of its consumer layer', async () => {
+  const ui = controller();
+  ui.run(`state.layer='TB_L2';state.calls=[];
+    highlightSelectedPoint=async()=>{};renderL1Workspace=()=>{};renderCurrentStatus=()=>{};renderSpectrum=async()=>{};
+    api=async path=>{state.calls.push(path);return {x:[0,100],y:[1,20],fit:{window_lo:20,window_hi:80}};};`);
+  await ui.run(`selectPoint({id:'14B:condition:0',stem:'condition',channel:0})`);
+  assert.match(ui.run('state.calls[0]'), /layer=TB_L1&consumer_layer=TB_L2/);
+});
+
+test('EC calibration drilldown requests the peak product selected by its consumer layer', async () => {
+  const ui = controller();
+  ui.run(`state.layer='EC_L3';state.calls=[];
+    renderEcReviewFiles=()=>{};renderCurrentStatus=()=>{};renderSpectrum=async()=>{};renderEcOverview=async()=>{};
+    renderSpectrumProvenance=()=>{};renderEcSourceConfig=()=>{};
+    api=async path=>{state.calls.push(path);return {x:[0,100],y:[1,20],fit:{lo:20,hi:80}};};`);
+  await ui.run(`selectEcPoint({id:'14B:ec:Co60:1332.492:0',stem:'Co60',channel:0,E:1332.492})`);
+  assert.match(ui.run('state.calls[0]'), /layer=EC_L2/);
+  assert.match(ui.run('state.calls[0]'), /consumer_layer=EC_L3/);
 });
 
 test('an earlier file switch cannot overwrite a later file switch when window saves finish out of order', async () => {
@@ -255,7 +337,7 @@ test('file fitting cannot submit the previous trial file after another trial has
       notify = () => {};
     `);
     ui.run(`const pending = ${action}; state.run = { id:'run-b', payload:'15B' }; saved.resolve();`);
-    await assert.rejects(ui.run('pending'), /试算已切换/);
+    await assert.rejects(ui.run('pending'), /任务已切换/);
     assert.equal(ui.run('submissions'), 0, action);
   }
 });
@@ -603,7 +685,7 @@ test('trial choices contain only the selected payload with concise labels and pr
     ] };
     renderRunOptions();
   `);
-  assert.deepEqual(ui.element('run-select').options.map(option => option.text), ['选择试算', '新协议验收', '窗口复核']);
+  assert.deepEqual(ui.element('run-select').options.map(option => option.text), ['选择任务', '新协议验收', '窗口复核']);
   assert.equal(ui.element('run-select').value, 'ten-b');
   assert.equal(ui.run('state.bootstrap.runs[1].name'), '10B · 10B · 新协议验收（');
 });
@@ -1325,6 +1407,17 @@ test('full-source view labels only configured ADC windows on the current physica
   assert.match(overlay.annotations[1].text,/1,?274\.5/);
 });
 
+test('doublet labels remain separate when both lines share a joint window', () => {
+  const ui=controller();
+  ui.run(`state.layer='EC_L2';state.channel=0;state.ecFullSource=true;state.point={stem:'src_Co60',E:1173.228};
+    state.ecPeakConfig={spectra:[{energy_key:'src_Co60',lines:[
+      {energy_keV:1173.228,windows:{'0':{lo:5800,hi:8500}},centers:{'0':6713}},
+      {energy_keV:1332.492,windows:{'0':{lo:5800,hi:8500}},centers:{'0':7695}}
+    ]}]};`);
+  const overlay=JSON.parse(ui.run('JSON.stringify(ecSourceWindowOverlays())'));
+  assert.deepEqual(overlay.annotations.map(item=>item.x),[6713,7695]);
+});
+
 test('source workflow maps grouped peak identities to the selected observation and channel', async () => {
   const ui=controller();
   ui.run(`state.channel=1;state.ecOverview={points:[
@@ -1348,6 +1441,24 @@ test('opening a source workflow selects its real filename instead of the first l
     {kind:'source',stem:'src_Cs137_25m'}, {kind:'source',stem:'src_Co60_40m'}
   ]}}};renderPipelinePlan=()=>{};openPipelineDialog();`);
   assert.equal(ui.element('pipeline-ec-file').value,'src_Co60_40m');
+});
+
+test('native imported source alias resolves to its unique current corrected observation', async () => {
+  const ui=controller();
+  ui.run(`state.run.analysis_contract='cali_proc@0.5';state.layer='EC_L2';state.channel=0;
+    state.ecPeakConfig={spectra:[{energy_key:'src_Na22',source_files:[{name:'src_Na22_Na22_5m_083_corr.l1.parquet'}]}]};
+    const imported={id:'15B:ec:src_Na22:0:511.004',stem:'src_Na22',energy_key:'src_Na22',channel:0,
+      signal_file:'Na22_corr.l1.parquet',contract_node:'/shared/15B/ec/L1/Na22'};
+    state.point=imported;state.ecOverview={points:[imported]};let submitted=[];
+    selectLayer=async layer=>{state.layer=layer;};selectEcPoint=async point=>{state.point=point;};
+    executeJob=async(layer,spec)=>{submitted.push({layer,...spec});};`);
+  await ui.run(`runPipeline([{layer:'EC_L2',stem:'src_Na22_Na22_5m_083',representative:false}],'ec')`);
+  const submitted=JSON.parse(ui.run('JSON.stringify(submitted)'));
+  assert.equal(submitted.length,1);
+  assert.equal(submitted[0].stem,'src_Na22_Na22_5m_083');
+  assert.equal(submitted[0].point_id,'15B:ec:src_Na22:0:511.004');
+  ui.run(`state.ecPeakConfig.spectra[0].source_files.push({name:'src_Na22_other_corr.l1.parquet'});`);
+  assert.equal(ui.run('ecObservationStem(state.point)'),'Na22');
 });
 
 test('CRC recovery rebuilds the selected source and background without fitting historical windows', async () => {
@@ -1511,4 +1622,72 @@ test('EC focused rendering preserves signed data while full-source view restores
   assert.equal(full.layout.yaxis.autorange,true);
   assert.equal(full.layout.yaxis.range,undefined);
   assert.deepEqual(full.traces[0].y,focused.traces[0].y);
+});
+
+
+test('native contract relabels EC steps while preserving legacy run identities', () => {
+  const ui=controller();
+  assert.equal(ui.run('layerDisplay("EC_L2")'),'EC_L2');
+  ui.run('state.run.analysis_contract="cali_proc@0.5";state.layer="EC_L3"');
+  assert.equal(ui.run('layerDisplay("EC_L1")'),'EC corr');
+  assert.equal(ui.run('layerDisplay("EC_L2")'),'EC L1');
+  assert.equal(ui.run('layerDisplay("EC_L3")'),'EC L2');
+  assert.match(ui.run('activeLayer().process'),/ODR/);
+});
+
+test('EC calibration defaults to log axes and preserves segment gaps and signed residuals when toggled', async () => {
+  const ui=controller();
+  ui.run(`state.layer='EC_L3';state.point={id:'low',center:200,E:40};
+    state.ecOverview={points:[{id:'low',center:200,E:40,residual_percent:-.5,used:true},
+                             {id:'high',center:7684,E:1332.492,residual_percent:.1,used:true}],
+      curve:{x:[200,250,null,2900,7684],y:[40,50,null,511,1332.492]}};
+    $('ec-detail-mode').value='residual';renderEcParams=()=>{};
+    let calibrationPlots=[];Plotly={react:async(chart,traces,layout)=>calibrationPlots.push({chart:chart.id,traces,layout})};`);
+  await ui.run('renderEcOverview()');
+  const plotted=JSON.parse(ui.run('JSON.stringify(calibrationPlots)'));
+  assert.equal(plotted[0].layout.xaxis.type,'log');
+  assert.equal(plotted[0].layout.yaxis.type,'log');
+  assert.equal(plotted[0].traces[0].connectgaps,false);
+  assert.equal(plotted[0].traces[0].y[2],null);
+  assert.deepEqual(plotted[0].traces[1].customdata,['low','high']);
+  assert.equal(plotted[1].layout.xaxis.type,'log');
+  assert.equal(plotted[1].layout.yaxis.type,'linear');
+  assert.deepEqual(plotted[1].traces[0].y,[-.5,.1]);
+  ui.element('ec-axis-scale').value='linear';
+  await ui.element('ec-axis-scale').listeners.change[0]();
+  const linear=JSON.parse(ui.run('JSON.stringify(calibrationPlots[2])'));
+  assert.equal(linear.layout.xaxis.type,'linear');
+  assert.equal(linear.layout.yaxis.type,'linear');
+  assert.notEqual(linear.layout.uirevision,plotted[0].layout.uirevision);
+  assert.deepEqual(linear.traces,plotted[0].traces);
+  assert.equal(ui.run('localStorage.getItem("grid-workbench-ec-scale")'),'linear');
+});
+
+test('native EC residuals use their energy band and never replace an unavailable prediction', async () => {
+  const ui=controller();
+  ui.run(`state.layer='EC_L3';state.run.analysis_contract='cali_proc@0.5';
+    state.ecOverview={energy_split:51,energy_split_high:55,
+      params:{EC_low:[-2.2776709050921455e-5,.1748298450475885,4.178292070750394],
+              EC_high:[-2.641377846003503e-7,.1744770344975735,6.233783171360028]},
+      points:[{id:'high',E:1332.492,center:7684.39632830319,predicted_energy:1331.3871442747684}]};
+    $('ec-detail-mode').value='residual';renderEcParams=()=>{};
+    let residualPlots=[];Plotly={react:async(chart,traces,layout)=>residualPlots.push({traces,layout})};`);
+  assert.ok(Math.abs(ui.run('ecPrediction({E:1332.492,center:7684.39632830319})')-1331.3871442747684)<1e-7);
+  assert.equal(ui.run('ecPrediction({E:52,center:270})'),null);
+  assert.equal(ui.run('ecPrediction({E:1332.492,center:7684.39632830319,predicted_energy:null})'),null);
+  await ui.run('renderEcOverview()');
+  const residual=JSON.parse(ui.run('JSON.stringify(residualPlots[1].traces[0].y)'))[0];
+  assert.ok(Math.abs(residual)<.1);
+  assert.ok(residual<0);
+});
+
+test('native xray workflow schedules the next acquisition slot as the same-channel background', () => {
+  const ui=controller();
+  ui.run(`state.run.analysis_contract='cali_proc@0.5';state.run.inventory={raw:{reading_preview:{rows:[
+    {kind:'xray',stem:'40keV_ch0',channel:0,energy_keV:40},
+    {kind:'xray',stem:'40keV_ch1',channel:1,energy_keV:40},
+    {kind:'xray',stem:'40keV_ch2',channel:2,energy_keV:40}]}}};`);
+  const plan=JSON.parse(ui.run('JSON.stringify(pipelinePlan("ec","","40keV_ch0"))'));
+  assert.deepEqual(plan.slice(0,2).map(x=>[x.layer,x.stem]),[['EC_L0','40keV_ch1'],['EC_L1','40keV_ch1']]);
+  assert.equal(plan.at(-1).stem,'40keV_ch0');
 });

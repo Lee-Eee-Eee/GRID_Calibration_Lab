@@ -68,6 +68,30 @@ def workbench(workspace):
     service.close()
 
 
+def test_personal_index_tracks_revision_and_survives_restart(workspace):
+    service = Workbench(workspace)
+    try:
+        run = service.create("14B", "Co60 comparison")
+        service.patch(run["id"], {"windows": {"20C_285_001": {"0": {"lo": 260, "hi": 340}}}})
+        record = next(row for row in service.personal_index()["runs"] if row["id"] == run["id"])
+        assert record["config_revision"] == 1
+        assert record["references"]["state"] == {
+            "scope": "workspace", "path": f"runs/{run['id']}/state.json",
+        }
+    finally:
+        service.close()
+    # Index summaries can be rebuilt solely from personal state; shared tables
+    # are not needed to recover the saved result/configuration relationship.
+    (workspace / "runs/_index/runs" / f"{run['id']}.json").unlink()
+    reopened = Workbench(workspace)
+    try:
+        restored = next(row for row in reopened.personal_index()["runs"] if row["id"] == run["id"])
+        assert restored["config_revision"] == 1
+        assert restored["name"] == "Co60 comparison"
+    finally:
+        reopened.close()
+
+
 def settled(service, run_id, job):
     # Windows file scanning and concurrent real demo jobs can delay the worker.
     deadline = time.monotonic() + 30

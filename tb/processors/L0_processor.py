@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from ...common.legacy_parser import parse_event_hk_to_dataframe, to_hk_data
+from ...common.native_time import publish_native_input
 from ...common.utils import DataLayout, get_timestamp, write_json, write_parquet
 
 
@@ -102,11 +103,17 @@ class TBL0Processor:
 
                 stem = observation.get("stem") or event_path.stem.replace(".event", "")
 
+                publish_native_input(df_data, metadata, self.layout.product_root, self.payload_name,
+                                     "tb", observation.get("acquisition_id") or observation.get("id") or stem)
+                if metadata.get("analysis_contract") and df_data.empty:
+                    raise ValueError("清洗后无有效 SCI 事件；EXP 已保留解码与 CRC 证据")
+
                 hk_data = to_hk_data(metadata["channels"])
                 parquet_path = self.layout.get_tb_l0_parquet(f"{stem}.l0.parquet")
                 write_parquet(
                     parquet_path, df_data, metadata=hk_data, meta_key="hk_data",
-                    schema_metadata={"acquisition": metadata.get("acquisition", {})},
+                    schema_metadata={"acquisition": metadata.get("acquisition", {}),
+                                     **({"native": metadata["native"]} if metadata.get("native") else {})},
                 )
 
                 results["outputs"].append({

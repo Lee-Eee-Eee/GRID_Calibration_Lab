@@ -1,5 +1,6 @@
 """能量标定(EC)处理 - L3层处理器。"""
 
+import copy
 import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -8,6 +9,7 @@ import lmfit
 import matplotlib.pyplot as plt
 import numpy as np
 from lmfit.models import QuadraticModel
+from scipy import odr
 
 from ...common.fit_policy import quality_warnings, unavailable_fit
 from ...common.utils import DataLayout, get_timestamp, read_json, write_json
@@ -43,14 +45,20 @@ def _number(value):
 class ECL3Processor:
     """EC L3层处理器 - 能量标定与分辨率拟合。每个通道独立。"""
 
-    def __init__(self, payload_name: str, product_root: Path, *, response_payload: str | None = None):
+    def __init__(self, payload_name: str, product_root: Path, *, response_payload: str | None = None,
+                 analysis_contract: str | None = None, analysis_config: dict | None = None):
         self.payload_name = payload_name
         self.response_payload = response_payload or payload_name
         self.layout = DataLayout(product_root, payload_name)
+        self.analysis_contract = analysis_contract
+        self.analysis_config = analysis_config or {}
 
     def process(self, ec_l2_dir: Path, config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         from ...common.spectral_models import unsupported_spectral_model
         cfg = config or {}
+        self.analysis_contract = cfg.get("analysis_contract", self.analysis_contract)
+        bundle = cfg.get("payload_contract_config", self.analysis_config)
+        self.analysis_config = bundle.get("ec_l2", bundle)
         peak_sets = normalize_peak_sets(cfg.get("ec_peak_sets", {}))
         e_cut = float(cfg.get("energy_split_low", 50.2))
 
@@ -69,6 +77,9 @@ class ECL3Processor:
             "excluded_points": sorted(set(cfg.get("ec_excluded", []))),
             "ec_peak_sets": peak_sets,
             "inactive_points": [],
+            "analysis_contract": self.analysis_contract,
+            "channels_updated": [],
+            "channels_reused": [],
         }
 
         try:
@@ -87,12 +98,36 @@ class ECL3Processor:
             fit_data_all = [row for row in fit_data_all if self._point_id(row) not in excluded]
             if not fit_data_all:
                 raise ValueError("No L2 fit data collected")
+            requested = set(range(4)) if cfg.get("fit_channels") is None else set(cfg["fit_channels"])
+            if not requested or any(isinstance(ch, bool) or ch not in range(4) for ch in requested):
+                raise ValueError("fit_channels must contain physical channels 0–3")
+            previous, previous_meta, previous_source = self._previous_models() if cfg.get("fit_channels") is not None else ({}, {}, None)
+            reused = {ch: row for ch, row in previous.items() if ch not in requested
+                      and not unsupported_spectral_model(self.response_payload, ch)}
+            recomputed = {ch for ch in range(4) if ch not in reused
+                          and not unsupported_spectral_model(self.response_payload, ch)}
+            if self.analysis_contract and recomputed:
+                self._validate_native_bindings([row for row in fit_data_all if row["channel"] in recomputed], results)
+                if reused:
+                    results["reference_by_channel"] = {
+                        str(ch): copy.deepcopy((previous_meta.get("reference_by_channel") or {}).get(
+                            str(ch), previous_meta.get("reference"))) if ch in reused else copy.deepcopy(results["reference"])
+                        for ch in range(4) if not unsupported_spectral_model(self.response_payload, ch)
+                    }
+                    retained = [row for row in (previous_meta.get("inputs") or []) if row.get("channel") in reused]
+                    results["inputs"] = retained + results.get("inputs", [])
+                    results["band_fits"] = {str(ch): copy.deepcopy((previous_meta.get("band_fits") or {}).get(str(ch), {}))
+                                           for ch in reused}
 
             ts = get_timestamp()
 
             for ch in range(4):
                 if unsupported_spectral_model(self.response_payload, ch):
                     results["calibration_params"][str(ch)] = _empty_channel_result(ch)
+                    continue
+                if ch in reused:
+                    results["calibration_params"][str(ch)] = copy.deepcopy(reused[ch])
+                    results["channels_reused"].append(ch)
                     continue
                 ch_data_raw = [d for d in fit_data_all if d["channel"] == ch]
                 if not ch_data_raw:
@@ -120,7 +155,11 @@ class ECL3Processor:
                     print(f"  EC L3 ch{ch}: {n_kept}/{n_raw} points have usable parameters")
 
                 try:
-                    self._fit_channel(ch, ch_data, ch_data_raw, ts, e_cut, results)
+                    if self.analysis_contract:
+                        self._fit_channel_native(ch, ch_data, ts, cfg, results)
+                    else:
+                        self._fit_channel(ch, ch_data, ch_data_raw, ts, e_cut, results)
+                    results["channels_updated"].append(ch)
                 except Exception as exc:
                     results["calibration_params"].setdefault(str(ch), _empty_channel_result(ch))
                     results["errors"].append(f"Channel {ch}: {exc}")
@@ -134,9 +173,30 @@ class ECL3Processor:
                     "payload": self.payload_name,
                     "energy_split": e_cut,
                     "calibration_params": results["calibration_params"],
+                    "analysis_contract": self.analysis_contract,
+                    "energy_split_high": results.get("energy_split_high"),
+                    "resolution_unit": "fraction" if self.analysis_contract else "percent",
+                    "resolution_coefficient_order": "aE2+bE+c" if self.analysis_contract else "aE+bE2+c",
                 },
             )
             results["output_json"] = out_json.name
+            if reused:
+                results["reused_from"] = previous_source
+            if self.analysis_contract:
+                from ...common.cali_contract import publish_l2
+                results["canonical"] = publish_l2(
+                    self.layout.product_root, self.payload_name, "ec",
+                    [results["calibration_params"].get(str(ch)) for ch in range(4)],
+                    {"config": cfg, "reference": results.get("reference"),
+                     "band_fits": results.get("band_fits"), "inputs": results.get("inputs"),
+                     "reference_by_channel": results.get("reference_by_channel"),
+                     "channels_updated": results["channels_updated"], "channels_reused": results["channels_reused"],
+                     "reused_from": results.get("reused_from"),
+                     "fit": {"energy": "ODR fixed energy anchors; E=f(ADC)",
+                             "resolution": "direct R=sqrt(aE2+bE+c)/E", "scale_covar": False},
+                     "status": "partial" if results["errors"] else "ready"},
+                    figures={name: self.layout.get_ec_l3_dir() / "figures" / name for name in results["output_figures"]},
+                )
             print(f"✓ EC L3: calibration generated ({out_json.name})")
 
         except Exception as exc:
@@ -147,6 +207,196 @@ class ECL3Processor:
 
         write_json(self.layout.get_ec_l3_json("L3_manifest.json"), results)
         return results
+
+    def _previous_models(self):
+        """Load seeded aggregate coefficients without changing their values."""
+        directory = self.layout.get_ec_l3_dir() / "json"
+        manifest = {}
+        if (directory / "L3_manifest.json").is_file():
+            try:
+                manifest = read_json(directory / "L3_manifest.json")
+            except (OSError, ValueError):
+                pass
+        candidates = list(reversed(sorted(directory.glob("*_EC.l3.json"))))
+        preferred = directory / str(manifest.get("output_json") or "")
+        if preferred.is_file():
+            candidates.insert(0, preferred)
+        for path in candidates:
+            try:
+                value = read_json(path)
+                if not isinstance(value, dict) or not isinstance(value.get("calibration_params"), dict):
+                    continue
+                if bool(value.get("analysis_contract")) != bool(self.analysis_contract):
+                    continue
+                models = {}
+                for channel, row in value["calibration_params"].items():
+                    if not isinstance(row, dict):
+                        continue
+                    ch = int(channel)
+                    if ch not in range(4):
+                        continue
+                    bands = ("low", "high") if self.analysis_contract else ("low",)
+                    names = [name for band in bands for name in (f"EC_{band}", f"resolution_{band}")]
+                    if not all(isinstance(row.get(name), list) and len(row[name]) == 3
+                               and all(np.isfinite(_number(item)) for item in row[name]) for name in names):
+                        continue
+                    models[ch] = copy.deepcopy(row)
+                if not models:
+                    continue
+                metadata = copy.deepcopy(manifest)
+                if value.get("contract_meta") and Path(value["contract_meta"]).is_file():
+                    metadata = {**metadata, **read_json(Path(value["contract_meta"]))}
+                return models, metadata, str(path)
+            except (OSError, ValueError, TypeError):
+                continue
+        return {}, {}, None
+
+    def _validate_native_bindings(self, rows, results):
+        import hashlib
+        bindings = []
+        for row in rows:
+            binding = row.get("signal_tb_correction") or {}
+            path, expected = binding.get("tb_model"), binding.get("tb_model_sha256")
+            if not path or not expected:
+                raise ValueError("New EC model needs the explicit TB model and hash from every L1 point")
+            if hashlib.sha256(Path(path).read_bytes()).hexdigest() != expected:
+                raise ValueError(f"TB model bytes changed: {path}")
+            bindings.append((str(Path(path).resolve()), expected, binding.get("ref_temp_C"), binding.get("ref_bias_V")))
+            background = row.get("background_tb_correction") or {}
+            if background.get("tb_model_sha256") != expected:
+                raise ValueError("Primary and background use different TB models")
+        if len(set(bindings)) != 1:
+            raise ValueError("EC input points use different TB models or reference conditions")
+        results["reference"] = {"tb_model": bindings[0][0], "tb_model_sha256": bindings[0][1],
+                                "ref_temp_C": bindings[0][2], "ref_bias_V": bindings[0][3]}
+        results["inputs"] = [{"file": row["file"], "channel": row["channel"], "energy_keV": row["E"]} for row in rows]
+
+    def _fit_channel_native(self, ch, rows, timestamp, cfg, results):
+        fit_config = self.analysis_config.get("fit", {})
+        low = float(cfg.get("energy_split_low", fit_config.get("split_low_keV", 51)))
+        high = float(cfg.get("energy_split_high", fit_config.get("split_high_keV", 55)))
+        if low >= high:
+            raise ValueError("Energy split must leave an explicit low/high boundary interval")
+        results.update(energy_split=low, energy_split_high=high)
+        record = _empty_channel_result(ch)
+        record.update(analysis_contract=self.analysis_contract, resolution_unit="fraction",
+                      resolution_coefficient_order="aE2+bE+c", energy_model="E=f(ADC)")
+        diagnostics = results.setdefault("band_fits", {}).setdefault(str(ch), {})
+        for band, points in (("low", [p for p in rows if p["E"] < low]),
+                             ("high", [p for p in rows if p["E"] >= high])):
+            if len(points) < 4:
+                results["errors"].append(f"Channel {ch} {band}: at least four points are required")
+                diagnostics[band] = {"status": "insufficient_points", "points": len(points)}
+                continue
+            energies = np.asarray([p["E"] for p in points])
+            centers = np.asarray([p["center"] for p in points])
+            errors = self._effective_errors(points, "center_err", results)
+            resolution = np.asarray([p["resolution"] for p in points]) / 100
+            res_error = self._effective_errors(points, "resolution_err", results) / 100
+            energy_fit = self._fit_energy_odr(centers, energies, errors)
+            res_fit = self._fit_resolution_direct(energies, resolution, res_error)
+            record[f"EC_{band}"], record[f"EC_{band}_err"] = energy_fit["coefficients"], energy_fit["coefficient_err"]
+            record[f"resolution_{band}"], record[f"resolution_{band}_err"] = res_fit["coefficients"], res_fit["coefficient_err"]
+            diagnostics[band] = {"energy_fit": energy_fit, "resolution_fit": res_fit,
+                                 "used": [self._point_id(p) for p in points]}
+        results["calibration_params"][str(ch)] = record
+        path = self.layout.get_ec_l3_json(f"{timestamp}_{self.payload_name}_ec_coef_ch{ch}.l3.json")
+        write_json(path, record)
+        for quantity in ("energy", "resolution"):
+            name = f"{timestamp}_{self.payload_name}_{quantity}_fit_ch{ch}.l3.png"
+            self._plot_native_model(ch, rows, record, low, high, quantity, self.layout.get_ec_l3_figure(name))
+            results["output_figures"].append(name)
+
+    @staticmethod
+    def _inverse_energy(parameters, energy):
+        a, b, c = parameters
+        root = np.sqrt(b * b + 4 * a * (energy - c))
+        return 2 * (energy - c) / (b + root) if b >= 0 else (-b + root) / (2 * a)
+
+    @classmethod
+    def _fit_energy_odr(cls, center, energy, center_std):
+        """Fit fixed energy anchors against measured ADC via a monotone inverse."""
+        center, energy, center_std = (np.asarray(value, dtype=float) for value in (center, energy, center_std))
+        if len(center) < 4 or not np.isfinite([center, energy, center_std]).all() or np.any(center_std <= 0):
+            raise ValueError("Energy ODR requires four finite points with positive ADC uncertainty")
+        adc_scale, energy_scale = float(max(center)), float(max(energy))
+        adc, anchors = center / adc_scale, energy / energy_scale
+        data = odr.RealData(anchors, adc, sy=center_std / adc_scale, fix=np.zeros(len(anchors), dtype=int))
+        def jacobian(parameters, x):
+            value = cls._inverse_energy(parameters, x)
+            return -np.asarray([value**2, value, np.ones_like(value)]) / (2 * parameters[0] * value + parameters[1])
+        def coordinate_jacobian(parameters, x):
+            value = cls._inverse_energy(parameters, x)
+            return 1 / (2 * parameters[0] * value + parameters[1])
+        model = odr.Model(cls._inverse_energy, fjacb=jacobian, fjacd=coordinate_jacobian)
+        solver = odr.ODR(data, model, beta0=np.polyfit(adc, anchors, 2, w=1 / center_std),
+                         maxit=500, partol=1e-10, sstol=1e-10, sclb=np.ones(3))
+        solver.set_job(deriv=3)
+        fit = solver.run()
+        if fit.info not in (1, 2, 3) or not np.isfinite(fit.cov_beta).all():
+            raise ValueError(f"Energy ODR failed: {fit.stopreason}")
+        adjusted = cls._inverse_energy(fit.beta, anchors)
+        if (not np.array_equal(fit.xplus, anchors) or
+                np.any(2 * fit.beta[0] * np.concatenate([adc, adjusted]) + fit.beta[1] <= 0)):
+            raise ValueError("Energy ODR changed an anchor or found a non-increasing response")
+        factors = np.asarray([energy_scale / adc_scale**2, energy_scale / adc_scale, energy_scale])
+        covariance = fit.cov_beta * np.outer(factors, factors)
+        delta = (adjusted - adc) * adc_scale
+        return {"coefficients": (fit.beta * factors).tolist(),
+                "coefficient_err": np.sqrt(np.diag(covariance)).tolist(), "covariance": covariance.tolist(),
+                "fixed_energy_keV": energy.tolist(), "adjusted_center_ADC": (adjusted * adc_scale).tolist(),
+                "adc_delta": delta.tolist(), "center_std_ADC": center_std.tolist(),
+                "ndf": len(center) - 3, "redchi": float(np.sum((delta / center_std)**2) / (len(center) - 3)),
+                "solver": "scipy.odr", "scale_covar": False, "odr_info": int(fit.info),
+                "odr_stopreason": list(fit.stopreason)}
+
+    @staticmethod
+    def _fit_resolution_direct(energy, resolution, uncertainty):
+        energy, resolution, uncertainty = (np.asarray(value, dtype=float) for value in (energy, resolution, uncertainty))
+        if len(energy) < 4 or np.any(uncertainty <= 0) or not np.isfinite([energy, resolution, uncertainty]).all():
+            raise ValueError("Resolution model requires four finite points and positive uncertainty")
+        scale = float(max(energy))
+        x = energy / scale
+        square = (resolution * x)**2
+        square_error = 2 * x**2 * resolution * uncertainty
+        initial = np.polyfit(x, square, 2, w=1 / square_error)
+        if np.any(np.polyval(initial, x) <= 0):
+            initial = np.asarray([float(np.mean(resolution))**2, 0, 0])
+        def value(x, a, b, c):
+            return np.sqrt(a * x**2 + b * x + c) / x
+        model = lmfit.Model(value)
+        fit = model.fit(resolution, model.make_params(a=initial[0], b=initial[1], c=initial[2]),
+                        x=x, weights=1 / uncertainty, scale_covar=False, max_nfev=20000)
+        if not fit.success or fit.covar is None or not np.isfinite(fit.covar).all():
+            raise ValueError("Resolution fit has no finite covariance")
+        factors = np.asarray([1., scale, scale**2])
+        coefficients = np.asarray([fit.params[name].value for name in ("a", "b", "c")]) * factors
+        if np.any(np.polyval(coefficients, energy) <= 0):
+            raise ValueError("Resolution model has a non-positive radicand at measured energies")
+        return {"coefficients": coefficients.tolist(), "coefficient_err": (np.sqrt(np.diag(fit.covar)) * factors).tolist(),
+                "redchi": float(fit.redchi), "ndf": int(fit.nfree), "scale_covar": False}
+
+    def _plot_native_model(self, channel, rows, record, low, high, quantity, path):
+        fig, ax = plt.subplots(figsize=(8, 5), constrained_layout=True)
+        energies, centers = np.asarray([p["E"] for p in rows]), np.asarray([p["center"] for p in rows])
+        if quantity == "energy":
+            ax.errorbar(centers, energies, xerr=[p["center_err"] for p in rows], fmt="o", markersize=3)
+        else:
+            ax.errorbar(energies, [p["resolution"] for p in rows], yerr=[p["resolution_err"] for p in rows], fmt="o", markersize=3)
+        for band, keep in (("low", energies < low), ("high", energies >= high)):
+            coef = record[f"EC_{band}" if quantity == "energy" else f"resolution_{band}"]
+            if coef is None or not np.any(keep):
+                continue
+            x = np.linspace(min(centers[keep] if quantity == "energy" else energies[keep]),
+                            max(centers[keep] if quantity == "energy" else energies[keep]), 200)
+            y = np.polyval(coef, x) if quantity == "energy" else 100 * np.sqrt(np.polyval(coef, x)) / x
+            ax.plot(x, y, label=band)
+        ax.set_xlabel("ADC" if quantity == "energy" else "Energy (keV)")
+        ax.set_ylabel("Energy (keV)" if quantity == "energy" else "Resolution (%)")
+        ax.set_title(f"{self.payload_name} CH{channel}")
+        ax.legend()
+        fig.savefig(path, dpi=150)
+        plt.close(fig)
 
     def _fit_channel(self, ch, ch_data, ch_data_raw, ts, e_cut, results):
         # Error vectors remain part of the schema even when a segment
@@ -275,6 +525,9 @@ class ECL3Processor:
                         "fit_quality": rec.get("fit_quality", {}),
                         "placeholder": rec.get("placeholder", False),
                         "fit_performed": rec.get("fit_performed", True),
+                        "signal_tb_correction": rec.get("signal_tb_correction"),
+                        "background_tb_correction": rec.get("background_tb_correction"),
+                        "analysis_contract": rec.get("analysis_contract"),
                         "file": fp.stem,
                     })
                 continue

@@ -4,21 +4,23 @@
 
 ## TB 与 EC
 
-![标定数据处理流程](images/calibration-flow.png)
-
 TB 在固定入射能量下测量温度、偏压对谱峰位置的影响；EC 采用 TB 参数进行温偏校正，再利用已知能线建立能量刻度。
+
+以下层级适用于 `cali_proc@0.5` 的 14B / 15B 预设。旧试算继续使用其保存的七层配置。
 
 | 层级 | 处理 | 主要产物 |
 | --- | --- | --- |
-| TB L0 | 解包事件与 HK，读取幅度和实测温偏，检查 CRC。 | Parquet 与元数据。 |
+| EXP | 按 XML 解包完整 SCI / HK，保留 CRC 及原生字段。 | `events.parquet`、`telemetry.parquet`、`issues.parquet`、`meta.json`。 |
+| TB / EC L0 | 清洗有效 CRC；保留完整事件与独立 HK 时间轴。 | 同上，尚未做分析选段。 |
 | TB L1 | 按工况和通道选择谱峰、拟合窗口与单背景模型。 | 峰位、误差、诊断及拟合图。 |
 | TB L2 | 将多个工况的峰位拟合为温偏增益曲面。 | 每通道曲面参数及残差图。 |
-| EC L0 | 读取 X 射线、放射源及本底数据。 | 事件幅度、温偏与时间信息。 |
-| EC L1 | 采用指定 TB 参数校正信号幅度。 | 校正后的 Parquet 与 TB 版本记录。 |
-| EC L2 | 对已知能线拟合峰位，多峰源使用独立窗口。 | 各能线、各通道的拟合结果。 |
-| EC L3 | 拟合能量关系和分辨率。 | 带时间戳的 EC 参数及图表。 |
+| EC corr | 独立选择 SCI / HK，按角色实测温偏和指定 TB 包校正幅度。 | 中间计算与模型路径、哈希绑定。 |
+| EC L1 | 对已知能线拟合峰位，多峰源使用独立窗口。 | 按能线组织的谱、参数和选段图。 |
+| EC L2 | 分段 ODR 能量关系和分辨率。 | 带时间戳的逐通道参数及图表。 |
 
-TB L1 和 EC L2 共用候选寻峰与质量诊断，模型采用单高斯峰加单一背景：无背景、线性、指数或二次背景。计数误差、模型选择和提示规则见 [寻峰说明](peak_finding.md)。
+TB L1 和 EC L1 保留候选寻峰、拖窗、质量诊断及局部重拟合。默认分析窗口和背景模型来自确认 YAML；Co60 的 `gaus` 背景是额外高斯分量。分箱默认 4 ADC，TB 为 Counts/ADC，EC 为 Counts/s/ADC；低计数误差采用配置中的 Gehrels 规则，协方差不按残差重缩放。
+
+14B / 15B 使用包级 `timestamp1 / 100 MHz`，不把 SCI 与 HK 时钟混用。EC 对信号和本底分别按当前物理通道的首末跨度归一化，检测时间倒退与超过 10 s 的间断。X 射线本底槽位按 `[1,2,3,0]` 取文件，再从该文件选择相同物理通道。配置、时间依据和选择范围均写入分析包。
 
 ## 工作区与输出
 
@@ -42,26 +44,27 @@ grid-workspace/
         └── ...            # 试算状态与人工修订
 ```
 
-产品按载荷和流程组织：
+新版规范产物与工作台操作索引同时保存，原始事件不会为每次拖窗重复解包：
 
 ```text
 products/<payload>/
-├── tb/
-│   ├── L0/                # parquet / json
-│   ├── L1/                # json / figures
-│   └── L2/                # json / figures
-└── ec/
-    ├── L0/                # parquet / json
-    ├── L1/                # parquet / json
-    ├── L2/                # json / figures
-    └── L3/                # json / figures
+├── EXP/<group>/<acquisition>/
+│   └── events.parquet, telemetry.parquet, issues.parquet, meta.json
+├── <tb|ec>/L0/<acquisition>/
+│   └── events.parquet, hk.parquet, meta.json
+├── <tb|ec>/L1/<analysis>/
+│   └── points.json, spectra.parquet, meta.json, fit.png, selection*.png
+└── <tb|ec>/L2/<timestamp>/
+    └── 模型 JSON, companion meta.json, 诊断图
 ```
 
-例如，TB L1 峰拟合记录使用 `{stem}_fit_results.l1.json`，TB L2 与 EC L3 参数分别使用带时间戳的 `*_TB.l2.json`、`*_EC.l3.json`。每层的 manifest 记录批处理结果、输入输出和单项错误。工作台还会固定读取配置及 EC 所用 TB 参数，保存窗口与屏蔽状态。
+L1 的 `points.json` 以通道为键，参数误差使用 `*_std`，高斯幅度输出高度，EC 分辨率为比例。TB L2 为 `<timestamp>_temp_bias_fit.json`，EC L2 分通道输出。规范详见 [新数据规范对照](cali_proc_format_20261102.md)，实测结果见 [适配验收](contract_migration_validation.md)。
+
+旧处理器内部操作 ID 和 `json/`、`parquet/` 索引继续支持已有界面与脚本。新规范接口的 `contract_layer=EC_corr/EC_L1/EC_L2` 分别映射内部 `EC_L1/EC_L2/EC_L3`，不会把两种编号混作同一接口。共享产品导入只创建小型读取索引，谱表留在原目录。
 
 ## 命令行运行
 
-`grid-calib` 使用库内置的 14B / 15B 配置，接受 `TB_L0`、`TB_L1`、`TB_L2`、`EC_L0`、`EC_L1`、`EC_L2`、`EC_L3`。原始数据路径由 [载荷配置](../config/payload_config.py) 指定；命名、XML 或字段有差异时，使用工作台编辑读取预设。
+`grid-calib` 保留旧版配置，接受 `TB_L0`、`TB_L1`、`TB_L2`、`EC_L0`、`EC_L1`、`EC_L2`、`EC_L3`。下方示例属于该入口。新规范通过工作台或 [服务器准备工具](server_workbench.md) 加载确认文件表和四份分析配置；服务器 14B 对应旧原始目录 03，15B 对应 02，显式记录 `source_mapping`，不会自动重命名旧试算。
 
 从源码可编辑安装时，默认 14B / 15B 原始目录相对于仓库上一级：
 
@@ -122,7 +125,7 @@ G(T, V) = G0 · (V − k·T − V0)² · (−T² + b·T + c)
 | b | 54.31 | [−500, 500] |
 | c | 23459.83 | [1e3, 1e8] |
 
-`k` 作为自由参数参与拟合。权重采用 L1 的 `1/center_err`，曲面结果同时输出约化 χ²、RMSE 和 MAPE。具体实现见 [TB L2 处理器](../tb/processors/L2_processor.py)。
+表中是旧默认初值。新规范从 `tb_l2.yaml` 读取各通道初值、边界和拟合方法，使用 `1/center_std` 权重、`scale_covar=False`。曲面同时输出约化 χ²、RMSE 和 MAPE。EC L2 依 `ec_l2.yaml` 做 `E=f(ADC)` 分段 ODR，分辨率为 `sqrt(aE²+bE+c)/E`。具体实现见 [TB L2](../tb/processors/L2_processor.py) 和 [EC 聚合处理器](../ec/processors/L3_processor.py)。
 
 ## 只读产物总览
 

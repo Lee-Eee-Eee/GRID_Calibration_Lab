@@ -1,0 +1,19 @@
+payload: 15B
+l1_config: ec_l1.yaml
+expected_input_measurements: 14
+fit:
+  split_low_keV: 51.0
+  split_high_keV: 55.0
+active_channels: [0, 1, 2, 3]
+null_channels: []
+energy_scope:
+  kind: X_new energies plus confirmed source anchors
+  min_keV: 40.0
+  max_keV: 1332.492
+  source_records_used: true
+  xray_energies_keV: [40.0, 45.0, 47.0, 49.0, 51.0, 55.0, 60.0, 65.0, 70.0, 80.0, 90.0]
+  excluded_xray_energies_keV: [53.0]
+  exclusion_evidence: 53 keV excluded because CH3 is a weak peak
+energy_fit: scipy.odr E=f(ADC), fixed energy anchors, ADC center_std errors, exact increasing inverse, unscaled
+  covariance
+resolution_fit: direct lmfit R with resolution_std weights, unscaled covariance

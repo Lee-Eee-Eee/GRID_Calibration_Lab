@@ -7,6 +7,7 @@ import contextlib
 import hashlib
 import io
 import sys
+import tempfile
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any
@@ -55,13 +56,15 @@ def _ensure_parser_path(root_dir: Path) -> Path:
 def _parse_silent(
     parse_fn, path: Path, data_tag: str, xml_file: Path,
     endian: str = "MSB", multi_evt: int | None = None, multi_step: int | None = None,
+    native_identity: bool = False,
 ):
     options: dict[str, Any] = {}
     if multi_evt is not None:
         options["multi_evt"] = multi_evt
     if multi_step is not None:
         options["multi_step"] = multi_step
-    packet = ET.parse(xml_file).getroot().find(data_tag)
+    xml_tree = ET.parse(xml_file)
+    packet = xml_tree.getroot().find(data_tag)
     if packet is None:
         raise ValueError(f"XML 中没有包标签 {data_tag}")
     packet_len = int(packet.attrib["packet_len"])
@@ -70,19 +73,38 @@ def _parse_silent(
     options["skip_et"] = ["waveform_data"]
     pieces: dict[str, list[np.ndarray]] = {}
     overlap = b""
-    with path.open("rb") as stream:
-        while block := stream.read(max(PARSER_CHUNK_BYTES, packet_len)):
-            buffer = overlap + block
-            with contextlib.redirect_stdout(io.StringIO()):
-                parsed = parse_fn(
-                    str(path), data_tag=data_tag, endian=endian,
-                    xml_file=str(xml_file), data=np.frombuffer(buffer, dtype=np.uint8), **options,
-                )[0]
-            for key, value in parsed.items():
-                pieces.setdefault(key, []).append(np.atleast_1d(value))
-            # A complete packet cannot start inside the last packet_len - 1
-            # bytes; retain just that suffix for a packet split by the next read.
-            overlap = buffer[-(packet_len - 1):] if packet_len > 1 else b""
+    # Historical XML uses the same tag for two unrelated clocks. Rename only
+    # this in-memory decode copy; the selected XML remains byte-for-byte intact.
+    with tempfile.TemporaryDirectory(prefix="grid-native-xml-") as temporary:
+        selected_xml = xml_file
+        duplicate = packet.findall("timestamp")
+        if native_identity and len(duplicate) == 2:
+            for field in duplicate:
+                field.tag = "timestamp2" if "repeat" in field.attrib else "timestamp1"
+            selected_xml = Path(temporary) / "clock-aliases.xml"
+            xml_tree.write(selected_xml, encoding="utf-8")
+        consumed, packet_offset = 0, 0
+        with path.open("rb") as stream:
+            while block := stream.read(max(PARSER_CHUNK_BYTES, packet_len)):
+                buffer_start = consumed - len(overlap)
+                consumed += len(block)
+                buffer = overlap + block
+                with contextlib.redirect_stdout(io.StringIO()):
+                    parsed, positions = parse_fn(
+                        str(path), data_tag=data_tag, endian=endian,
+                        xml_file=str(selected_xml), data=np.frombuffer(buffer, dtype=np.uint8), **options,
+                    )
+                if native_identity and parsed:
+                    positions = np.asarray(positions).reshape(-1, 2)
+                    repeat = int(multi_evt or 1)
+                    parsed["packet_byte_offset"] = np.repeat(positions[:, 0] + buffer_start, repeat)
+                    parsed["packet_idx"] = np.repeat(np.arange(packet_offset, packet_offset + len(positions)), repeat)
+                    packet_offset += len(positions)
+                for key, value in parsed.items():
+                    pieces.setdefault(key, []).append(np.atleast_1d(value))
+                # A complete packet cannot start inside the last packet_len - 1
+                # bytes; retain just that suffix for a packet split by the next read.
+                overlap = buffer[-(packet_len - 1):] if packet_len > 1 else b""
     return {key: np.concatenate(values, axis=0) for key, values in pieces.items()}
 
 
@@ -169,6 +191,112 @@ def packet_repeat_options(xml_path: Path, tag: str) -> dict[str, int]:
     return {"multi_evt": body_size // stride, "multi_step": stride}
 
 
+def _native_parse_result(event_data, hk_data, event_path, hk_path, fields, transform,
+                         profile, settings, xml_files, effective_options, observation,
+                         event_tag, hk_tag, include_per_point_tv):
+    """Retain native clocks and complete telemetry before analysis selection."""
+    from .native_time import CONTRACT
+
+    def table(data, length):
+        values = {}
+        for key, raw in data.items():
+            array = np.asarray(raw)
+            if array.ndim == 1 and len(array) == length:
+                values["raw_crc" if key == "CRC" else key] = array
+        values["source_idx"] = np.arange(length, dtype=np.int64)
+        return pd.DataFrame(values)
+
+    channel_name = fields.get("channel", "channel_n")
+    channel = np.asarray(event_data.get(channel_name, [])).reshape(-1)
+    if not len(channel):
+        raise ValueError("事件文件没有解析出事件；请核对 XML 和包标签")
+    events = table(event_data, len(channel))
+    events["channel"] = channel.astype(int)
+    if "timestamp1" not in events or "timestamp2" not in events:
+        raise ValueError("FT584 新规范需要独立 timestamp1/timestamp2；请核对事件 XML")
+    for destination, logical, default in (("data_max", "max", "data_max"), ("data_base", "base", "data_base")):
+        source = fields.get(logical, default)
+        if source not in events:
+            raise ValueError(f"事件缺少幅值字段 {source}")
+        events[destination] = events[source]
+    events["amp"] = events["data_max"].astype(float) - events["data_base"].astype(float) / float(transform.get("base_divisor", 4))
+    crc = fields.get("crc", "crc_check")
+    if crc not in events:
+        raise ValueError("新规范事件必须保留 CRC 校验结果")
+    events["crc_check"] = events[crc].astype(bool)
+    hk_size = len(np.asarray(hk_data.get("crc_check", [])).reshape(-1))
+    if not hk_size:
+        raise ValueError("新规范 HK 必须保留 CRC 校验结果")
+    telemetry = table(hk_data, hk_size)
+    for ch in range(4):
+        names = {name: fields.get(name, default).format(channel=ch, ch=ch) for name, default in (
+            ("temp", "sipm_temp{channel}"), ("bias", "sipm_voltage{channel}"), ("current", "sipm_current{channel}"))}
+        for name in ("temp", "bias"):
+            if names[name] not in telemetry:
+                raise ValueError(f"HK 缺少通道 {ch} 的 {names[name]}")
+        current = telemetry[names["current"]].to_numpy() if names["current"] in telemetry else np.zeros(hk_size)
+        telemetry[f"raw_temp_ch{ch}"] = telemetry[names["temp"]]
+        telemetry[f"raw_bias_ch{ch}"] = telemetry[names["bias"]]
+        telemetry[f"raw_imon_ch{ch}"] = current
+        telemetry[f"sipm_temp_ch{ch}"] = convert_hk_temperature(telemetry[names["temp"]].to_numpy(), transform)
+        telemetry[f"bias_ch{ch}"] = convert_hk_bias(telemetry[names["bias"]].to_numpy(), current, transform)
+        telemetry[f"sipm_current_uA_ch{ch}"] = current
+    clean_hk = telemetry.loc[telemetry["crc_check"].eq(True)]
+    channels = {}
+    for ch in range(4):
+        t, v = clean_hk[f"sipm_temp_ch{ch}"], clean_hk[f"bias_ch{ch}"]
+        channels[str(ch)] = {"temp": float(t.mean()), "temp_err": float(t.std(ddof=1)) if len(t) > 1 else 0.,
+                             "bias": float(v.mean()), "bias_err": float(v.std(ddof=1)) if len(v) > 1 else 0.,
+                             "temp_n": len(t), "bias_n": len(v), "temp_n_raw": len(telemetry), "bias_n_raw": len(telemetry)}
+    valid = events["crc_check"].eq(True) & events["channel"].isin(range(4)) & np.isfinite(events["amp"])
+    frame = events.loc[valid].copy()
+    # This coarse field is preserved for legacy plots; exposure uses timestamp1.
+    frame["utc"] = frame["utc"] if "utc" in frame else np.nan
+    frame["cal_ccm"] = frame.get("data_ccm", np.nan) / float(transform.get("ccm_divisor", 65535))
+    if include_per_point_tv:
+        frame["temp"] = frame["channel"].map({ch: channels[str(ch)]["temp"] for ch in range(4)})
+        frame["bias"] = frame["channel"].map({ch: channels[str(ch)]["bias"] for ch in range(4)})
+    issue_columns = ["kind", "table", "decoded_offset", "source_offset", "bytes", "expected_bytes", "token", "evidence"]
+    issues = []
+    diagnostics = {}
+    for kind, source, data, count in (("science", event_path, event_data, len(events)), ("hk", hk_path, hk_data, len(telemetry))):
+        packet = ET.parse(xml_files["event" if kind == "science" else "hk"]).getroot().find(event_tag if kind == "science" else hk_tag)
+        length = int(packet.attrib["packet_len"])
+        offsets = np.unique(np.asarray(data["packet_byte_offset"], dtype=np.int64))
+        cursor = 0
+        for offset in offsets:
+            if offset > cursor:
+                issues.append(["unrecognized_bytes", kind, cursor, cursor, int(offset - cursor), None, None, "Outside recognized packets"])
+            cursor = int(offset) + length
+        if cursor < source.stat().st_size:
+            issues.append(["boundary_residual", kind, cursor, cursor, source.stat().st_size - cursor, length, None, "Trailing incomplete or unrecognized bytes"])
+        diagnostics[kind] = {"packets": len(offsets), "rows": count, "packet_bytes": length,
+                             "crc_failed_rows": int((~np.asarray(data["crc_check"], dtype=bool)).sum()),
+                             "unrecognized_bytes": int(source.stat().st_size - len(offsets) * length)}
+    metadata = {
+        "analysis_contract": CONTRACT, "event_file": event_path.name, "hk_file": hk_path.name,
+        "event_path": str(event_path.resolve()), "hk_path": str(hk_path.resolve()),
+        "event_tag": event_tag, "hk_tag": hk_tag, "n_events_raw": len(events), "n_events_valid": len(frame),
+        "include_per_point_tv": include_per_point_tv, "channels": channels,
+        "conditions_source": "unselected_full_HK_compatibility; select platform at L0→L1",
+        "crc": {"available": True, "checked_events": len(events), "failed_events": int((~events["crc_check"]).sum())},
+        "hk_crc": {"available": True, "checked_packets": len(telemetry), "failed_packets": int((~telemetry["crc_check"]).sum())},
+        "acquisition": {"analysis_contract": CONTRACT, "profile_version": profile.get("version", 1),
+                        "profile_sha256": profile.get("_sha256"), "revision": profile.get("_revision"),
+                        "parser": settings, "effective_packet_options": effective_options,
+                        "fitting": profile.get("fitting", {}), "observation": observation,
+                        "xml": {kind: {"path": str(path.resolve()), "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
+                                for kind, path in xml_files.items()}},
+    }
+    frame.attrs["native_tables"] = {"events": events, "telemetry": telemetry,
+                                     "issues": pd.DataFrame(issues, columns=issue_columns),
+                                     "diagnostics": diagnostics,
+                                     "group": observation.get("group") or (
+                                         "source" if observation.get("kind") == "background"
+                                         else observation.get("kind", "ec" if include_per_point_tv else "tb"))}
+    return frame, metadata
+
+
 def parse_event_hk_to_dataframe(
     event_path: Path,
     hk_path: Path,
@@ -221,10 +349,15 @@ def parse_event_hk_to_dataframe(
         if endian != "MSB":
             options["endian"] = endian
         effective_options[kind] = dict(options)
-        return _parse_silent(parse_grid_data_new, path, tag, xml_files[kind], **options)
+        return _parse_silent(parse_grid_data_new, path, tag, xml_files[kind],
+                             native_identity=profile.get("analysis_contract") == "cali_proc@0.5", **options)
 
     event_data = parse(event_path, "event", event_tag)
     hk_data = parse(hk_path, "hk", hk_tag)
+    if profile.get("analysis_contract") == "cali_proc@0.5":
+        return _native_parse_result(event_data, hk_data, event_path, hk_path, fields, transform,
+                                    profile, settings, xml_files, effective_options, observation,
+                                    event_tag, hk_tag, include_per_point_tv)
     hk_crc = hk_data.get("crc_check")
     hk_crc_quality = {"available": hk_crc is not None, "checked_packets": 0, "failed_packets": 0}
     if hk_crc is not None:

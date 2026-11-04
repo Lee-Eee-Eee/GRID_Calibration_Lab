@@ -205,6 +205,14 @@ def validate_profile(profile: dict) -> dict:
     if not isinstance(profile, dict):
         raise ValueError("采集配置必须为 JSON 对象")
     normalized = _merge(default_profile(), profile)
+    if normalized.get("analysis_contract") is not None:
+        if normalized["analysis_contract"] != "cali_proc@0.5":
+            raise ValueError("未知分析规范版本")
+        config = normalized.get("analysis_config")
+        if config is not None and (not isinstance(config, dict) or set(config) != {"tb_l1", "tb_l2", "ec_l1", "ec_l2"}):
+            raise ValueError("新规范需要四份 TB/EC L1/L2 分析配置")
+        if config is not None and any(not isinstance(value, dict) for value in config.values()):
+            raise ValueError("每份分析配置必须为对象")
     capabilities = normalized.get("processing_capabilities", {})
     if not isinstance(capabilities, dict):
         raise ValueError("processing_capabilities 必须为对象")
@@ -445,14 +453,21 @@ def _normal_row(row: dict, root: Path, profile: dict, *, from_manifest=False) ->
                 result["source"] = _name(source_name, "源名称")
             result["peak_energies_keV"] = _energies(energies, "发射源能线")
         exposure = result.get("exposure_minutes")
-        if exposure is None:
+        native_contract = profile.get("analysis_contract") == "cali_proc@0.5"
+        if exposure is None and not native_contract:
             exposure = _number(result.get("exposure"), "曝光时间", positive=True)
             unit = str(result.get("unit", "m")).casefold()
             if unit not in ("m", "min", "minute", "minutes", "h", "hour", "hours", "s", "sec"):
                 raise ValueError(f"未知曝光时间单位 {unit}")
             exposure *= 60 if unit in ("h", "hour", "hours") else 1 / 60 if unit in ("s", "sec") else 1
-        result["exposure_minutes"] = _number(exposure, "曝光分钟", positive=True)
-        canonical = f"src_{result['source']}_{result['exposure_minutes']:g}m"
+        result["exposure_minutes"] = _number(exposure, "曝光分钟", positive=True) if exposure is not None else None
+        if native_contract:
+            identity = result.get("acquisition_id") or Path(result["event"]).name
+            canonical = result.get("stem") or f"src_{result['source']}_{identity}"
+            if not canonical.startswith(f"src_{result['source']}_"):
+                raise ValueError("源谱 stem 必须包含发射源与采集身份")
+        else:
+            canonical = f"src_{result['source']}_{result['exposure_minutes']:g}m"
     else:
         canonical = Path(result["event"]).name.removesuffix(".event.dat").removesuffix(".dat")
     # EC canonical names are the stable contract consumed by later processors.

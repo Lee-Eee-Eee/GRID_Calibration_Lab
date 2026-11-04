@@ -28,6 +28,7 @@ from ..common.spectral_models import detector_identity, photopeak_channels, unsu
 from ..common.utils import (
     DataLayout,
     read_json,
+    read_parquet,
     read_parquet_metadata,
     validated_events,
     write_json,
@@ -105,8 +106,16 @@ class ComputeAdapter:
     def observations(self, payload):
         return discover(self._base_config(payload)[1], self.acquisition) if self.acquisition else None
 
+    def contract_options(self):
+        profile = self.acquisition or {}
+        return {"analysis_contract": profile.get("analysis_contract"),
+                "analysis_config": profile.get("analysis_config", {})}
+
     def historical_layer(self, payload: str, layer: str) -> Path:
         """Read-only source layer; an edited output label never renames its input."""
+        selected = getattr(self, "input_layer_roots", {}).get(layer)
+        if selected:
+            return self._layer_dir(Path(selected), payload, layer)
         if self.dataset:
             if self.dataset.get("product_dir"):
                 kind, level = layer.split("_")
@@ -451,7 +460,7 @@ class ComputeAdapter:
             columns.append("crc_check")
         frame = parquet.read(columns=columns).to_pandas()
         metadata = {}
-        for key in ("hk_data", "acquisition", "tb_correction"):
+        for key in ("hk_data", "acquisition", "tb_correction", "native"):
             raw = (parquet.schema_arrow.metadata or {}).get(key.encode("utf-8"))
             try:
                 metadata[key] = json.loads(raw.decode("utf-8")) if raw else {}
@@ -491,8 +500,6 @@ class ComputeAdapter:
         if layer not in ("TB_L0", "TB_L1"):
             raise ValueError("TB spectrum layer must be TB_L0 or TB_L1")
         path = self._find_l0(payload, product_root, stem)
-        if path is None:
-            raise FileNotFoundError(f"No real L0 spectrum available for {stem}")
         l1_path = self._layer_dir(product_root, payload, "TB_L1") / "json" / f"{stem}_fit_results.l1.json"
         records = read_json(l1_path) if l1_path.is_file() else []
         record = (
@@ -500,6 +507,14 @@ class ComputeAdapter:
             if isinstance(records, list)
             else None
         )
+        if (path is None or getattr(self, "prefer_saved_tb", False)) and record and record.get("contract_node"):
+            from ..common.contract_import import read_saved_spectrum
+            result = read_saved_spectrum(Path(record["contract_node"]), channel, "tb")
+            result.update(stem=stem, yerr=result["error"], y_label=result["ordinate"],
+                          hk_data=None, fit=record, id=f"{payload}:{stem}:{channel}")
+            return _clean(result)
+        if path is None:
+            raise FileNotFoundError(f"No real L0 spectrum available for {stem}")
         if record is not None:
             record = {
                 **record,
@@ -520,6 +535,17 @@ class ComputeAdapter:
         if not amp.size:
             raise ValueError(f"L0 has no events for {stem} ch{channel}")
         acquisition = metadata["acquisition"] or {}
+        if self.contract_options()["analysis_contract"] == "cali_proc@0.5" and layer == "TB_L1":
+            from ..common.legacy_parser import to_hk_data
+            from ..common.native_time import select_conditions
+
+            native = metadata["native"] or acquisition.get("native", {})
+            configured = (self.acquisition or {}).get("analysis_config", {}).get("tb_l1", {})
+            measurement = configured.get("measurements", {}).get(stem, {})
+            target = measurement.get("target_bias_V", acquisition.get("observation", {}).get("bias"))
+            tolerance = configured.get("shared", {}).get("conditions", {}).get("tolerance_V", .3)
+            conditions = select_conditions(read_parquet(Path(native["l0_node"]) / "hk.parquet"), float(target), float(tolerance))
+            metadata["hk_data"] = to_hk_data(conditions["channels"])
         histogram = self._tb_histogram(record, acquisition)
         # Use the same binning as the saved fit. Historical one-ADC displays
         # retain their compact viewport while configured spectra keep all bins.
@@ -557,13 +583,16 @@ class ComputeAdapter:
             "unsupported_spectral_model": unsupported_spectral_model(self.detector_payload(payload), channel),
             "window_bounds": {"min": histogram["min"], "max": histogram["max"], "minimum_width": 8 * width},
             "default_window": {
-                "lo": (record or {}).get("window_lo", histogram["min"]),
-                "hi": (record or {}).get("window_hi", histogram["max"]),
+                "lo": (record or {}).get("window_lo") if (record or {}).get("window_lo") is not None else histogram["min"],
+                "hi": (record or {}).get("window_hi") if (record or {}).get("window_hi") is not None else histogram["max"],
             },
         }
+        if self.contract_options()["analysis_contract"] == "cali_proc@0.5" and layer == "TB_L1":
+            from ..common.cali_contract import gehrels_error
+            common.update(y=hist / width, yerr=gehrels_error(hist) / width, y_label="Counts / ADC")
         if common["unsupported_spectral_model"] and layer == "TB_L1":
             return _clean({**common, "fit": None, "curve": None})
-        if layer == "TB_L0" or record is None:
+        if layer == "TB_L0" or record is None or record.get("center") is None:
             return _clean({**common, "fit": record, "curve": None})
         if input_quality.get("excluded_crc_count", 0) and not record.get("input_quality"):
             return _clean(
@@ -805,6 +834,9 @@ class ComputeAdapter:
         profile = self.dataset.get("profile") if self.dataset else payload
         path = self.resources / f"legacy_fit_windows_config_{profile}.json"
         windows = copy.deepcopy(read_json(path)) if path.exists() else {}
+        if (self.acquisition or {}).get("analysis_contract") == "cali_proc@0.5":
+            from ..common.cali_contract import tb_windows
+            windows = tb_windows(self.acquisition)
         # Older hand-picked windows used '-' while 14B raw files use '_'.
         for key, value in list(windows.items()):
             windows.setdefault(key.replace("-", "_"), copy.deepcopy(value))
@@ -818,7 +850,7 @@ class ComputeAdapter:
             stem = fit_path.name.removesuffix("_fit_results.l1.json")
             for record in records:
                 if (not isinstance(record, dict) or record.get("channel") not in range(4)
-                        or "window_lo" not in record or "window_hi" not in record):
+                        or record.get("window_lo") is None or record.get("window_hi") is None):
                     continue
                 windows.setdefault(stem, {})[str(record["channel"])] = {
                     "lo": record["window_lo"], "hi": record["window_hi"], "manual": True,
@@ -853,7 +885,12 @@ class ComputeAdapter:
             raise ValueError(f"{layer} 输入不完整，请先按当前读取配置重新运行上游层")
         for path in paths:
             metadata = read_parquet_metadata(path, "acquisition")
-            if metadata.get("profile_sha256") != self.acquisition.get("_sha256"):
+            explicit = layer in getattr(self, "explicit_input_layers", set())
+            accepted = getattr(self, "accepted_input_profiles", {}).get(layer, [self.acquisition.get("_sha256")])
+            sha = metadata.get("profile_sha256")
+            prior_rule = getattr(self, "input_profile_rules", {}).get(sha)
+            compatible_file = prior_rule is not None and prior_rule.get(layer) is not None and _stem(path.name) not in prior_rule[layer]
+            if not explicit and sha not in accepted and not compatible_file:
                 raise ValueError(f"{path.name} 使用旧读取标准或缺少配置来源；请先重新运行 {layer}")
 
     def execute(
@@ -872,6 +909,17 @@ class ComputeAdapter:
         representative = bool(config.get("representative", True))
         inventory = self.inventory(payload)
         cfg = self._config(payload, observations=inventory["raw"]["reading_preview"])
+        contract = self.contract_options()
+        native = contract["analysis_contract"] == "cali_proc@0.5"
+        analysis_settings = {"analysis_contract": contract["analysis_contract"],
+                             "payload_contract_config": contract["analysis_config"]}
+        if native:
+            fit = contract["analysis_config"].get("ec_l2", {}).get("fit", {})
+            analysis_settings.update(energy_split_low=float(fit.get("split_low_keV", 51)),
+                                     energy_split_high=float(fit.get("split_high_keV", 55)),
+                                     bin_width=float(contract["analysis_config"].get("ec_l1", {}).get("shared", {}).get("bin_width", 4.)))
+        rows = (inventory["raw"].get("reading_preview") or {}).get("rows", [])
+        native_background = next((row["stem"] for row in rows if row["kind"] == "background"), None)
         selection = config.get("only")
         if selection is not None:
             selection = [_stem(item) for item in selection]
@@ -922,10 +970,12 @@ class ComputeAdapter:
             hydrated = self._hydrate(payload, product_root, "TB_L0", selection)
             self._verify_acquisition_inputs(payload, product_root, "TB_L0", selection)
             windows = self._windows(payload, config, product_root)
-            result = TBL1Processor(payload, product_root, response_payload=self.detector_payload(payload)).process(
+            result = TBL1Processor(payload, product_root, response_payload=self.detector_payload(payload),
+                                  analysis_contract=contract["analysis_contract"]).process(
                 layout.get_tb_l0_dir(),
                 {
                     **TB_PROCESS_PARAMS,
+                    **analysis_settings,
                     "fit_windows_config": str(windows),
                     "automatic_window": config.get("automatic_window", False),
                     "peak_detection": config.get("peak_detection", {}),
@@ -936,7 +986,7 @@ class ComputeAdapter:
                 only_stems=[f"{stem}.l0" for stem in selection] if selection is not None else None,
             )
         elif layer == "TB_L2":
-            if self.acquisition:
+            if self.acquisition and "TB_L1" not in getattr(self, "explicit_input_layers", set()):
                 allowed = {
                     row["stem"] for row in inventory["raw"]["reading_preview"]["rows"] if row["kind"] == "tb"
                 }
@@ -945,7 +995,9 @@ class ComputeAdapter:
                         path.unlink()
             (layout.get_tb_l0_dir() / "parquet").mkdir(parents=True, exist_ok=True)
             result = TBL2Processor(payload, product_root, response_payload=self.detector_payload(payload)).process(
-                layout.get_tb_l1_dir(), layout.get_tb_l0_dir(), excluded_points=config.get("excluded", [])
+                layout.get_tb_l1_dir(), layout.get_tb_l0_dir(), excluded_points=config.get("excluded", []),
+                **({"fit_channels": config["fit_channels"]} if config.get("fit_channels") else {}),
+                **({"analysis_contract": contract["analysis_contract"], "analysis_config": contract["analysis_config"]} if native else {})
             )
             selection = None  # A surface always uses the full current L1 snapshot.
         elif layer == "EC_L0":
@@ -1012,13 +1064,14 @@ class ComputeAdapter:
                         self.historical_layer(payload, "EC_L0") / "parquet",
                     )
                     for path in directory.glob("src_bkg_*.l0.parquet")
-                    if not self.acquisition
-                    or _stem(path.name) == f"src_bkg_{float(cfg.bkg_exposure_minutes):g}m"
+                    if ((_stem(path.name) == native_background) if native else
+                        (not self.acquisition or _stem(path.name) == f"src_bkg_{float(cfg.bkg_exposure_minutes):g}m"))
                 }
                 selection = sorted(set(selection) | backgrounds)
             hydrated = self._hydrate(payload, product_root, "EC_L0", selection)
             self._verify_acquisition_inputs(payload, product_root, "EC_L0", selection)
-            result = ECL1Processor(payload, product_root, response_payload=self.detector_payload(payload)).process(cfg, Path(tb_path), only_stems=selection)
+            result = ECL1Processor(payload, product_root, response_payload=self.detector_payload(payload),
+                                  **contract).process(cfg, Path(tb_path), only_stems=selection)
         elif layer == "EC_L2":
             if tb_path is None or not Path(tb_path).is_file():
                 raise ValueError("EC L2 requires the explicitly selected TB L2 dependency")
@@ -1032,8 +1085,8 @@ class ComputeAdapter:
                         self.historical_layer(payload, "EC_L1") / "parquet",
                     )
                     for path in directory.glob("src_bkg_*_corr.l1.parquet")
-                    if not self.acquisition
-                    or _stem(path.name) == f"src_bkg_{float(cfg.bkg_exposure_minutes):g}m"
+                    if ((_stem(path.name) == native_background) if native else
+                        (not self.acquisition or _stem(path.name) == f"src_bkg_{float(cfg.bkg_exposure_minutes):g}m"))
                 }
                 selection = sorted(set(selection) | backgrounds)
             hydrated = self._hydrate(payload, product_root, "EC_L1", selection)
@@ -1062,7 +1115,11 @@ class ComputeAdapter:
                 if selection is not None
                 else None
             )
-            processor = ECL2Processor(payload, product_root, response_payload=self.detector_payload(payload))
+            if native and selection is not None:
+                energies = sorted({f"src_{row['source']}" if row["kind"] == "source" else
+                                   f"{float(row['energy_keV']):g}keV" for row in rows
+                                   if row["stem"] in selection and row["kind"] in ("source", "xray")})
+            processor = ECL2Processor(payload, product_root, response_payload=self.detector_payload(payload), **contract)
             profile = self.dataset.get("profile") if self.dataset else payload
             if profile and profile != payload:
                 window_source = ECL2Processor(profile, product_root)
@@ -1072,6 +1129,7 @@ class ComputeAdapter:
                 layout.get_ec_l1_dir(),
                 {
                     **EC_PROCESS_PARAMS,
+                    **analysis_settings,
                     **({"bin_width": config["bin_width"]} if "bin_width" in config else {}),
                     "only_energies": energies,
                     "only_stems": selection,
@@ -1080,24 +1138,27 @@ class ComputeAdapter:
                     **({"fit_channels": config["fit_channels"]} if "fit_channels" in config else {}),
                     "automatic_window": config.get("automatic_window", False),
                     "peak_detection": config.get("peak_detection", {}),
-                    "background_stem": f"src_bkg_{float(cfg.bkg_exposure_minutes):g}m"
+                    "background_stem": native_background if native else f"src_bkg_{float(cfg.bkg_exposure_minutes):g}m"
                     if cfg.bkg_exposure_minutes
                     else None,
                     "only_point": config.get("ec_point_id"),
                 },
             )
         else:
-            if self.acquisition:
+            if self.acquisition and "EC_L2" not in getattr(self, "explicit_input_layers", set()):
                 allowed = {
                     f"{row['energy_keV']:g}keV" if row["kind"] == "xray" else f"src_{row['source']}"
                     for row in inventory["raw"]["reading_preview"]["rows"]
                     if row["kind"] in ("xray", "source")
                 }
                 for path in (layout.get_ec_l2_dir() / "json").glob("*_fit_results.l2.json"):
-                    if path.name.removesuffix("_fit_results.l2.json") not in allowed:
+                    imported = (bool(contract) and any(row.get("contract_node") for row in read_json(path)))
+                    if path.name.removesuffix("_fit_results.l2.json") not in allowed and not imported:
                         path.unlink()
-            result = ECL3Processor(payload, product_root, response_payload=self.detector_payload(payload)).process(
+            result = ECL3Processor(payload, product_root, response_payload=self.detector_payload(payload), **contract).process(
                 layout.get_ec_l2_dir(), {**EC_PROCESS_PARAMS, "ec_excluded": config.get("ec_excluded", []),
+                                       "fit_channels": config.get("fit_channels"),
+                                       **analysis_settings,
                                        "ec_peak_sets": config.get("ec_peak_sets", {})}
             )
             selection = None
@@ -1155,6 +1216,7 @@ class ComputeAdapter:
             for item in result.get("outputs", []):
                 requested = set(result.get("fit_channels", config.get("fit_channels", [0, 1, 2, 3])))
                 updated = set(item.get("channels_updated", range(item.get("channels_fitted", 0))))
+                updated.update(item.get("channels_unconfirmed", []))
                 if requested - updated and not any(
                     isinstance(error, dict) and error.get("stem") == item["stem"] for error in errors
                 ):
@@ -1185,9 +1247,10 @@ class ComputeAdapter:
                     warnings.append(
                         f"Channel {channel}: insufficient usable points for one resolution segment"
                     )
-            warnings.append(
+            if not native:
+                warnings.append(
                 "Existing L3 algorithm fits E(ADC) globally and shares low/high coefficients; wiki describes segmented ADC(E). Scientific direction is preserved and requires review"
-            )
+                )
         has_partial_output = bool(outputs)
         if layer == "EC_L3":
             has_partial_output = has_partial_output and any(

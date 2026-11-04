@@ -12,6 +12,7 @@ const layers = [
   { id: "EC_L3", title: "能量标定", heading: "EC 能量刻度与分辨率", description: "复用现行 E=f(ADC) 全局拟合；低 / 高能段当前使用同一组系数。", input: "EC L2 · 已知能量与峰位", output: "L3 标定 JSON · 分辨率图", dependency: "EC L2 + 对应 TB 版本", process: "现行 E=f(ADC) 全局二次拟合；方向与 wiki 分段规范有差异，详见算法说明" }
 ];
 const state = { bootstrap: null, run: null, layer: "TB_L0", channel: 0, surface: null, spectrum: null, point: null, ecOverview: null, tbVersions: [], datasets: [], surfaceMode: "response", busy: false, loading: false, dirty: false, openToken: 0, loadToken: 0, spectrumToken: 0, ecToken: 0, pollToken: 0, tab: "artifacts", analysisView: "residual", expandedJobs: new Set() };
+const inputSelection = { token: 0, previewToken: 0, runId: null, layer: null, slot: null, mode: "input", origin: "shared", data: null, candidate: null, follow: false, impact: null, busy: false };
 const statusNames = { idle: "未运行", pending: "未运行", not_run: "未运行", queued: "排队中", running: "运行中", succeeded: "计算成功", success: "计算成功", completed: "计算成功", partial: "部分完成", failed: "计算失败", stale: "依赖待更新", historical: "仅历史参考" };
 const plotConfig = { responsive: true, displaylogo: false, showLink: false, modeBarButtonsToRemove: ["select2d", "lasso2d", "autoScale2d", "toggleSpikelines", "sendDataToCloud", "sendChartToCloud"], toImageButtonOptions: { format: "png", scale: 2 } };
 const chartFont = { family: 'Arial, "Microsoft YaHei", sans-serif', size: 12, color: "#586572" };
@@ -71,7 +72,7 @@ function updateSpectralModelControls() {
   }
   $("l1-fit-all-channels").textContent = hasPlasticChannel() ? "拟合此文件 · CH 0–2" : "拟合此文件 · 四通道";
   $("fit-next-step").hidden = !isPeakReviewLayer();
-  $("review-next-layer").textContent = state.layer === "TB_L1" ? "TB L2 · 曲面拟合 →" : "EC L3 · 能量刻度 →";
+  $("review-next-layer").textContent = state.layer === "TB_L1" ? "TB L2 · 曲面拟合 →" : `${layerDisplay("EC_L3")} · 能量刻度 →`;
 }
 function chartMessage(id, text) { const chart = $(id); if (window.Plotly && chart.data) Plotly.purge(chart); clear(chart).append(node("p", "chart-loading", text)); }
 function valueText(value) { return value === null || value === undefined ? "—" : Array.isArray(value) ? value.join(" · ") : typeof value === "object" ? JSON.stringify(value) : String(value); }
@@ -96,7 +97,20 @@ function jobErrorText(error) {
   });
   return [...new Set(messages)].slice(0, 3).join("；") || String(error || "计算失败");
 }
-function activeLayer() { return layers.find((item) => item.id === state.layer); }
+function nativeContract() { return state.run?.analysis_contract === "cali_proc@0.5"; }
+function layerDisplay(id) { return nativeContract() ? ({EC_L1:"EC corr",EC_L2:"EC L1",EC_L3:"EC L2"}[id] || String(id).replace("_"," ")) : id; }
+function activeLayer() {
+  const layer = layers.find((item) => item.id === state.layer);
+  if (!nativeContract()) return layer;
+  const views = {
+    TB_L0:{title:"解包与清洗",heading:"TB 采集数据",input:"原始 SCI / HK",output:"EXP · 清洗后的 L0",process:"EXP 解码 → L0 清洗"},
+    EC_L0:{title:"解包与清洗",heading:"EC 采集数据",input:"原始 SCI / HK",output:"EXP · 清洗后的 L0",process:"EXP 解码 → L0 清洗"},
+    EC_L1:{title:"温偏校正",heading:"EC 温偏校正",input:"EC L0 + TB L2",output:"corr · amp_corr",process:"各角色 HK 平台均值校正"},
+    EC_L2:{title:"能谱与单点拟合",heading:"EC 能谱与单点拟合",input:"L0 → corr",output:"L1 · points / spectra / meta",process:"本通道配对 · 曝光与密度谱"},
+    EC_L3:{title:"能量关系与分辨率",heading:"EC 能量刻度与分辨率",input:"EC L1 单点",output:"L2 · 分通道模型与 Meta",process:"分段 ODR · 固定能量 / ADC 误差"}
+  };
+  return {...layer,...views[layer.id]};
+}
 function viewContext() { return `${state.run?.id}:${state.layer}:${state.channel}`; }
 function plotContext() { return `${viewContext()}:${state.loadToken}:${state.spectrumToken}`; }
 function isUnpackLayer() { return ["TB_L0", "EC_L0"].includes(state.layer); }
@@ -107,10 +121,10 @@ function unpackRawInputs() {
   return unpackInputs().filter(item => item.event);
 }
 function unpackDisabledReason(all = false) {
-  if (!state.run) return "请先选择数据并创建试算";
-  if (state.loading) return "正在载入试算";
+  if (!state.run) return "请先选择数据并创建任务";
+  if (state.loading) return "正在载入任务";
   if (state.busy) return "处理器正在运行";
-  if (!state.run.dataset?.raw_dir && !state.run.raw_dir && !unpackRawInputs().length) return "当前仅载入产品，请选择原始数据目录后创建试算";
+  if (!state.run.dataset?.raw_dir && !state.run.raw_dir && !unpackRawInputs().length) return "当前仅载入产品，请选择原始数据目录后创建任务";
   if (all) return unpackRawInputs().length ? "" : "当前层未发现匹配的原始文件，请检查数据目录与文件规则";
   if (!state.point) return "请先选择输入文件";
   if ($("unpack-search").value.trim() && !state.point.stem.toLowerCase().includes($("unpack-search").value.trim().toLowerCase())) return "请从筛选结果中选择输入文件";
@@ -160,6 +174,249 @@ async function runUnpack(all = false) {
   await executeJob(state.layer, all ? { representative: false } : { stem: state.point.stem, channel: state.channel, representative: false });
 }
 function runPath(suffix = "") { return `/api/runs/${encodeURIComponent(state.run.id)}${suffix}`; }
+
+function inputContextCurrent(token = inputSelection.token) {
+  return token === inputSelection.token && inputSelection.runId === state.run?.id && inputSelection.layer === state.layer && !!$("layer-input-dialog")?.open;
+}
+function inputSourceName(origin) { return { shared: "共享产品", current: "当前任务", task: "其他任务" }[origin] || "选定结果"; }
+function inputObservationName(value) { return value && typeof value === "object" ? String(value.stem || value.id || value.name || "") : String(value ?? ""); }
+function inputCandidateLabel(candidate) {
+  if (!candidate) return "未选择";
+  if (candidate.origin === "shared" && candidate.layer) return `${candidate.payload || state.run?.payload || ""} · ${layerDisplay(candidate.layer)}`;
+  return candidate.run_name || candidate.label || candidate.filename || "选定结果";
+}
+function inputVersionLabel(candidate) {
+  const version = String(candidate?.version || "");
+  if (version === "current") return "当前结果";
+  if (/^[0-9a-f]{8,}$/i.test(version) || /^\d{6,}[-_T]?\d*/.test(version)) return "";
+  return version;
+}
+function inputCandidateCoverage(candidate) {
+  const observations = candidate.observations || [], channels = candidate.channels || [];
+  return [observations.length ? `${observations.length} 个文件` : "", channels.length ? channels.map(ch => `CH${ch}`).join(" / ") : ""].filter(Boolean).join(" · ");
+}
+function inputHasChannelScope() { return inputSelection.mode === "input" && ["TB_L1", "TB_L2", "EC_L2", "EC_L3"].includes(inputSelection.layer); }
+function inputScopeChannels(candidate) {
+  if (!inputHasChannelScope()) return [];
+  if (candidate?.channels?.length) return candidate.channels;
+  return ["TB_L1", "EC_L2"].includes(inputSelection.layer) ? supportedFitChannels() : [0, 1, 2, 3];
+}
+function inputScopeDescription(scope = {}) {
+  const observations = scope.observations || scope.stems || [], channels = scope.channels || [];
+  return [observations.length === 1 ? inputObservationName(observations[0]) : observations.length ? `${observations.length} 个文件` : "", channels.length ? channels.map(ch => `CH${ch}`).join(" / ") : "", scope.point_ids?.length ? `${scope.point_ids.length} 个峰` : ""].filter(Boolean).join(" · ") || "所选输入";
+}
+function inputImpactSteps(impact) {
+  if (impact?.steps?.length) return impact.steps;
+  return (impact?.layers || []).map(layer => ({ layer, scope: impact.scopes?.[layer] || {} }));
+}
+function appendInputImpact(holder, impact) {
+  const steps = inputImpactSteps(impact);
+  if (!steps.length) { holder.append(node("p", "muted-text", impact?.message || "无需重新计算")); return; }
+  for (const step of steps) {
+    const row = node("div", "input-impact-row");
+    row.append(node("span", "", layerDisplay(step.layer)), node("span", "", step.scope ? inputScopeDescription(step.scope) : step.label || "所选输入"));
+    holder.append(row);
+  }
+}
+function renderLayerInputs() {
+  const holder = $("layer-inputs"), menu = $("layer-result-menu");
+  if (!holder || !menu) return;
+  const pending = (state.run?.last_impact?.layers || []).filter(layer => (state.run?.dirty_layers || []).includes(layer));
+  $("update-affected-layers").hidden = !pending.length; $("update-affected-layers").disabled = state.busy;
+  $("update-affected-layers").title = pending.map(layerDisplay).join(" → ");
+  const summary = state.run?.layer_inputs?.[state.layer];
+  holder.hidden = !summary; menu.hidden = !summary;
+  if (!summary) return;
+  clear(holder);
+  for (const slot of summary.slots || []) {
+    const selected = slot.selected, row = node("div", "layer-input-row"), source = node("span", "layer-input-source");
+    row.append(node("span", "layer-input-label", slot.label || (slot.layer === "RAW" ? "原始数据" : layerDisplay(slot.layer))));
+    if (slot.key === "raw") {
+      const path = selected?.path || selected?.raw_dir || slot.path || state.run.dataset?.raw_dir || "未选择原始数据";
+      source.textContent = String(path).split(/[\\/]/).filter(Boolean).slice(-2).join(" / ") || path; source.title = path;
+    } else {
+      const origin = inputSourceName(selected?.origin), label = selected && inputCandidateLabel(selected), version = selected && (inputVersionLabel(selected) || (selected.created_at ? shortDate(selected.created_at) : ""));
+      source.textContent = slot.follow_current ? slot.key === "tb" ? "跟随本任务 TB" : "本任务 · 当前结果" : selected ? [origin, label !== origin ? label : "", version].filter(Boolean).join(" · ") : "未选择";
+      const scope = slot.scope || selected?.scope;
+      if (scope && ((scope.observations || scope.stems || []).length || scope.channels?.length)) source.textContent += ` · ${inputScopeDescription(scope)}`;
+      source.title = selected?.product_root || selected?.path || "";
+    }
+    const change = node("button", "text-button", "更换"); change.type = "button"; change.disabled = state.busy;
+    change.setAttribute("aria-label", `更换${slot.label || slot.layer}输入`);
+    change.addEventListener("click", handleError(() => slot.key === "raw" ? openCreateDialog() : openLayerInputChooser(slot.key)));
+    row.append(source, change); holder.append(row);
+  }
+  const result = summary.selected_result;
+  $("layer-result-label").textContent = result ? result.version === "current" ? "当前结果" : `结果 · ${inputVersionLabel(result) || shortDate(result.created_at)}` : "结果";
+  $("layer-result-label").title = result ? inputCandidateLabel(result) : "选择本层结果";
+  $("choose-layer-result").disabled = state.busy;
+  if (state.layer === "EC_L1" && (summary.slots || []).some(slot => slot.key === "tb")) $("dependency-toolbar").hidden = true;
+}
+function closeLayerInputChooser() {
+  if (inputSelection.busy) return;
+  ++inputSelection.token; ++inputSelection.previewToken;
+  $("layer-input-dialog").close(); inputSelection.data = null; inputSelection.impact = null;
+}
+function layerInputError(error) {
+  if (!inputContextCurrent()) return;
+  const holder = $("input-choice-error"); holder.textContent = error.message || String(error); holder.hidden = false;
+}
+function setInputChoiceBusy(busy) {
+  inputSelection.busy = busy;
+  for (const control of $("layer-input-dialog").querySelectorAll("input, select, [data-input-origin], .input-candidate")) control.disabled = busy;
+  $("import-input-tb").disabled = busy;
+  $("close-layer-input").disabled = busy; $("cancel-layer-input").disabled = busy;
+  const ready = !!inputSelection.impact && (!!inputSelection.candidate || inputSelection.follow);
+  $("apply-layer-input").disabled = busy || !ready;
+  $("apply-update-layer-input").disabled = busy || !ready || !inputImpactSteps(inputSelection.impact).length;
+}
+async function openLayerInputChooser(slot, mode = "input") {
+  if (!state.run || state.busy) return;
+  $("layer-result-menu").open = false;
+  const token = ++inputSelection.token;
+  Object.assign(inputSelection, { runId: state.run.id, layer: state.layer, slot, mode, data: null, candidate: null, follow: false, impact: null, busy: false });
+  ++inputSelection.previewToken;
+  $("layer-input-title").textContent = mode === "result" ? `采用 ${layerDisplay(state.layer)} 结果` : "选择输入";
+  $("input-candidate-search").value = ""; $("input-choice-error").hidden = true;
+  $("input-candidate-details").hidden = true; $("input-scope-panel").hidden = true; $("input-scope-panel").open = false; $("input-impact").hidden = true;
+  clear($("input-candidate-list")).append(node("p", "", "正在读取产品…"));
+  $("layer-input-dialog").showModal(); setInputChoiceBusy(false);
+  try {
+    const result = await api(`/api/runs/${encodeURIComponent(inputSelection.runId)}/layer-inputs?layer=${encodeURIComponent(inputSelection.layer)}`);
+    if (!inputContextCurrent(token)) return;
+    inputSelection.data = result;
+    const selectedSlot = (result.slots || []).find(item => item.key === slot);
+    if (mode === "input" && !selectedSlot) throw new Error("本层没有该输入入口，请重新选择。");
+    inputSelection.origin = (mode === "result" ? result.selected_result?.origin : selectedSlot?.follow_current ? "current" : selectedSlot?.selected?.origin) || "shared";
+    if (mode === "result" && !inputCandidates().some(candidate => candidate.origin === inputSelection.origin)) inputSelection.origin = ["current", "shared", "task"].find(origin => inputCandidates().some(candidate => candidate.origin === origin)) || "shared";
+    $("layer-input-title").textContent = mode === "result" ? `采用 ${layerDisplay(state.layer)} 结果` : `选择 ${selectedSlot.label || layerDisplay(selectedSlot.layer)}`;
+    $("import-input-tb").hidden = mode !== "input" || slot !== "tb";
+    renderInputTaskFilter(); renderInputCandidates();
+  } catch (error) { if (inputContextCurrent(token)) { clear($("input-candidate-list")); layerInputError(error); } }
+}
+function inputCandidates() {
+  const data = inputSelection.data;
+  return inputSelection.mode === "result" ? data?.results || [] : data?.slots?.find(item => item.key === inputSelection.slot)?.candidates || [];
+}
+function filteredInputCandidates() {
+  const search = $("input-candidate-search").value.trim().toLowerCase(), task = $("input-task-filter").value;
+  return inputCandidates().filter(candidate => candidate.origin === inputSelection.origin && (!task || candidate.run_id === task) && (!search || [candidate.label, candidate.run_name, candidate.version, ...(candidate.observations || []).map(inputObservationName)].join(" ").toLowerCase().includes(search)));
+}
+function renderInputTaskFilter() {
+  const select = clear($("input-task-filter")); select.append(new Option("全部任务", ""));
+  const tasks = new Map(inputCandidates().filter(item => item.origin === "task").map(item => [item.run_id, item.run_name || item.run_id]));
+  for (const [id, name] of tasks) select.append(new Option(name, id));
+  select.hidden = inputSelection.origin !== "task";
+}
+function renderInputCandidates() {
+  for (const tab of document.querySelectorAll("[data-input-origin]")) { const active = tab.dataset.inputOrigin === inputSelection.origin; tab.setAttribute("aria-selected", String(active)); tab.tabIndex = active ? 0 : -1; }
+  $("input-task-filter").hidden = inputSelection.origin !== "task";
+  const list = clear($("input-candidate-list")), candidates = filteredInputCandidates();
+  if (inputSelection.mode === "input" && inputSelection.origin === "current") {
+    const follow = node("button", "input-candidate"); follow.type = "button"; follow.setAttribute("aria-pressed", String(inputSelection.follow));
+    follow.append(node("strong", "", inputSelection.slot === "tb" ? "跟随本任务 TB" : "使用本任务上游结果"));
+    follow.addEventListener("click", () => selectInputCandidate(null, true)); list.append(follow);
+  }
+  for (const candidate of candidates) {
+    const button = node("button", "input-candidate"); button.type = "button"; button.dataset.candidateId = candidate.id;
+    button.setAttribute("aria-pressed", String(!inputSelection.follow && inputSelection.candidate?.id === candidate.id));
+    button.append(node("strong", "", inputCandidateLabel(candidate)), node("small", "", [inputVersionLabel(candidate), timestamp(candidate.created_at), inputCandidateCoverage(candidate)].filter(Boolean).join(" · ")));
+    button.addEventListener("click", () => selectInputCandidate(candidate)); list.append(button);
+  }
+  if (!candidates.length && !(inputSelection.mode === "input" && inputSelection.origin === "current")) list.append(node("p", "", "没有匹配的结果"));
+}
+function renderInputScope(candidate) {
+  const panel = $("input-scope-panel"), observations = clear($("input-scope-observations")), channels = clear($("input-scope-channels"));
+  panel.hidden = !candidate || inputSelection.mode === "result"; panel.open = false;
+  const channelScope = inputHasChannelScope(); panel.dataset.channelScope = String(channelScope);
+  panel.querySelector("summary").textContent = channelScope ? "选择文件与通道" : "选择文件"; $("input-channel-scope").hidden = !channelScope;
+  for (const value of candidate?.observations || []) { const name = inputObservationName(value), option = new Option(name, name); option.selected = true; observations.append(option); }
+  for (const channel of candidate ? inputScopeChannels(candidate) : []) {
+    const label = node("label"), box = node("input"); box.type = "checkbox"; box.value = channel; box.checked = true;
+    box.setAttribute("aria-label", `选用 CH ${channel}`); label.append(box, node("span", "", `CH ${channel}`)); channels.append(label);
+  }
+  observations.disabled = !(candidate?.observations || []).length;
+}
+function selectedInputScope() {
+  if (!inputSelection.candidate || inputSelection.mode === "result") return undefined;
+  const candidate = inputSelection.candidate, allObservations = candidate.observations || [];
+  const observations = [...$("input-scope-observations").options].filter(item => item.selected).map(item => item.value);
+  const boxes = inputHasChannelScope() ? [...$("input-scope-channels").querySelectorAll('input[type="checkbox"]')] : [], allChannels = inputHasChannelScope() ? candidate.channels?.length ? candidate.channels : boxes.map(item => Number(item.value)) : [];
+  const channels = boxes.filter(item => item.checked).map(item => Number(item.value));
+  if (allObservations.length && !observations.length || allChannels.length && !channels.length) throw new Error("请至少选择一个文件和一个可用通道。");
+  if (observations.length === allObservations.length && channels.length === allChannels.length) return undefined;
+  return { ...(allObservations.length ? { observations } : {}), ...(allChannels.length ? { channels } : {}) };
+}
+function inputSelectionBody() {
+  const scope = selectedInputScope();
+  return { layer: inputSelection.layer, ...(inputSelection.mode === "input" ? { slot: inputSelection.slot } : {}), mode: inputSelection.mode, candidate_id: inputSelection.candidate?.id || null, follow_current: inputSelection.follow, ...(scope ? { scope } : {}) };
+}
+function selectInputCandidate(candidate, follow = false) {
+  if (inputSelection.busy) return;
+  inputSelection.candidate = candidate; inputSelection.follow = follow; inputSelection.impact = null;
+  $("input-choice-error").hidden = true; $("input-impact").hidden = true; renderInputCandidates(); renderInputScope(candidate);
+  const details = clear($("input-candidate-details")); details.hidden = !candidate;
+  if (candidate) {
+    const files = node("details"), summary = node("summary", "", "文件与配置"); files.append(summary);
+    if (candidate.product_root) files.append(node("p", "", candidate.product_root));
+    if (candidate.acquisition) files.append(node("p", "", `读取配置 ${candidate.acquisition.revision ? `v${candidate.acquisition.revision}` : ""}${candidate.acquisition.sha256 ? ` · ${candidate.acquisition.sha256.slice(0, 10)}` : ""}`));
+    for (const file of (candidate.files || []).slice(0, 30)) files.append(node("p", "", typeof file === "string" ? file : file.relative || file.path));
+    if ((candidate.files || []).length > 30) files.append(node("p", "", `共 ${candidate.files.length} 个文件`)); details.append(files);
+  }
+  previewLayerInputChoice().catch(layerInputError);
+}
+async function previewLayerInputChoice() {
+  if (inputSelection.busy) return;
+  const token = inputSelection.token, preview = ++inputSelection.previewToken;
+  inputSelection.impact = null; setInputChoiceBusy(false);
+  $("input-choice-error").hidden = true;
+  clear($("input-impact-steps")).append(node("p", "muted-text", "正在分析更新范围…")); $("input-impact").hidden = false;
+  const body = inputSelectionBody();
+  let impact;
+  try { impact = await api(`/api/runs/${encodeURIComponent(inputSelection.runId)}/layer-inputs/preview`, { method: "POST", body }); }
+  catch (error) { if (inputContextCurrent(token) && preview === inputSelection.previewToken) throw error; return; }
+  if (!inputContextCurrent(token) || preview !== inputSelection.previewToken) return;
+  inputSelection.impact = impact; const holder = clear($("input-impact-steps")); appendInputImpact(holder, impact); $("input-impact").hidden = false;
+  setInputChoiceBusy(false);
+}
+async function applyLayerInputChoice(update = false) {
+  if (!inputSelection.impact || inputSelection.busy || !inputContextCurrent()) return;
+  const token = inputSelection.token, body = inputSelectionBody(), runId = inputSelection.runId;
+  setInputChoiceBusy(true); $("input-choice-error").hidden = true;
+  try {
+    if (state.ecPeakDirty) await saveEcPeakConfig(false);
+    if (state.dirty) await saveRevision({}, true);
+    if (!inputContextCurrent(token)) return;
+    const result = await api(`/api/runs/${encodeURIComponent(runId)}/layer-inputs`, { method: "POST", body: { ...body, action: update ? "apply_and_update" : "apply" } });
+    if (!inputContextCurrent(token)) return;
+    state.run = result.run || result; inputSelection.busy = false; closeLayerInputChooser();
+    const adoptedResult = body.mode === "result";
+    if (adoptedResult) { state.surface = null; state.ecOverview = null; state.l1Overview = null; state.spectrum = null; }
+    renderRun(); if (adoptedResult) await loadSurfaceSafely();
+    const job = result.jobs?.[0] || (state.run.jobs || []).find(item => ["queued", "running"].includes(item.status));
+    if (update && (job || state.run.update_chain?.status === "running")) await restorePolling(job);
+    else notify(inputSelection.mode === "result" ? "已采用所选结果。" : "输入已应用。", "success");
+  } catch (error) { if (inputContextCurrent(token)) layerInputError(error); else throw error; }
+  finally { if (token === inputSelection.token) setInputChoiceBusy(false); }
+}
+
+async function updateAffectedLayers() {
+  const pending = (state.run?.last_impact?.layers || []).filter(layer => (state.run?.dirty_layers || []).includes(layer));
+  if (!pending.length || state.busy) return;
+  const runId = state.run.id, openToken = state.openToken;
+  setBusy(true);
+  try {
+    if (state.ecPeakDirty) await saveEcPeakConfig(false);
+    if (state.dirty) await saveRevision({}, true);
+    if (state.run?.id !== runId || state.openToken !== openToken) return;
+    const result = await api(`/api/runs/${encodeURIComponent(runId)}/updates`, { method: "POST", body: {} });
+    if (state.run?.id !== runId || state.openToken !== openToken) return;
+    state.run = result.run || result; renderRun();
+    const job = result.jobs?.[0] || (state.run.jobs || []).find(item => ["queued", "running"].includes(item.status));
+    if (job || state.run.update_chain?.status === "running") await restorePolling(job);
+    else notify("受影响层已更新。", "success");
+  } finally { if (state.run?.id === runId && state.openToken === openToken) setBusy(false); }
+}
 function paramsFor(value) { if (!value) return {}; if (Array.isArray(value)) return value[state.channel] || {}; return value[state.channel] && typeof value[state.channel] === "object" ? value[state.channel] : value; }
 function pointLabel(point) { return `${point.stem} · ${number(point.temp, 1)} °C / ${number(point.bias, 3)} V${isExcluded(point) ? " · 已屏蔽" : point.fit_status === "not_parsed" ? " · 待解包" : point.fit_status === "not_fitted" ? " · 待拟合" : hasQualityWarning(point) ? " · 疑似问题" : pointUsage(point) === false ? " · 无可用参数" : ""}`; }
 function excludedIds() { return state.run?.config?.[state.layer.startsWith("EC") ? "ec_excluded" : "excluded"] || []; }
@@ -192,13 +449,14 @@ function renderNavigation() {
     for (const layer of layers.filter((item) => item.id.startsWith(family))) {
       const button = node("button", `stage-nav-button${state.layer === layer.id ? " active" : ""}`);
       button.type = "button"; button.dataset.layer = layer.id; button.setAttribute("aria-current", state.layer === layer.id ? "step" : "false");
-      button.append(node("span", "nav-layer", layer.id.slice(-2)), node("span", "", layer.title));
+      const label = nativeContract() && ["TB_L0","EC_L0"].includes(layer.id) ? "原始解析" : layer.title;
+      button.append(node("span", "nav-layer", (nativeContract() ? (["TB_L0","EC_L0"].includes(layer.id) ? "EXP/L0" : layerDisplay(layer.id).split(" ").pop()) : layer.id.slice(-2))), node("span", "nav-title", label));
       const stage = state.run?.stages?.[layer.id];
       const navStatus = stage?.stale && normalizedStatus(stage?.status) === "succeeded" ? "stale" : normalizedStatus(stage?.status);
       const coverage = stage?.acquisition_coverage, partial = coverage?.completed > 0 && coverage.completed < coverage.required && !["running","queued","failed"].includes(navStatus);
       const statusLabel = partial ? `已处理 ${coverage.completed} / ${coverage.required}` : statusNames[navStatus] || "未运行";
-      button.title = `${layer.id} · ${layer.title} · ${statusLabel}`;
-      button.setAttribute("aria-label", `${layer.id} ${layer.title}，状态：${statusLabel}`);
+      button.title = `${layerDisplay(layer.id)} · ${layer.title} · ${statusLabel}`;
+      button.setAttribute("aria-label", `${layerDisplay(layer.id)} ${layer.title}，状态：${statusLabel}`);
       const dot = node("span", `nav-status ${partial ? "succeeded" : navStatus}`); dot.title = statusLabel; dot.setAttribute("aria-hidden", "true"); button.append(dot);
       if (state.run) { const shortStatus = { succeeded: "已计算", partial: "部分完成", failed: "失败", stale: "待更新", running: "运行中", queued: "排队中" }; button.append(node("span", "nav-status-text", partial ? `${coverage.completed}/${coverage.required}` : shortStatus[navStatus] || "未运行")); }
       button.addEventListener("click", handleError(() => selectLayer(layer.id))); group.append(button);
@@ -213,11 +471,11 @@ function cleanRunName(name, payload) {
   if (text.endsWith(payload)) text = text.slice(0, -payload.length).replace(/[\s·:：—\-]+$/, "");
   return text.replace(/[（(\[【]+\s*$/, "").trim();
 }
-function shortDate(value) { return value ? new Date(value).toLocaleString("zh-CN", {month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",hour12:false,timeZone:"Asia/Shanghai"}) : "未命名试算"; }
+function shortDate(value) { return value ? new Date(value).toLocaleString("zh-CN", {month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",hour12:false,timeZone:"Asia/Shanghai"}) : "未命名任务"; }
 function renderRunOptions() {
   const payload = state.run?.payload || $("payload").value;
   const runs = (state.bootstrap?.runs || []).filter(run => run.payload === payload);
-  const select = clear($("run-select")); select.append(new Option(runs.length ? "选择试算" : "暂无试算", ""));
+  const select = clear($("run-select")); select.append(new Option(runs.length ? "选择任务" : "暂无任务", ""));
   const names = runs.map(run => cleanRunName(run.name, run.payload) || shortDate(run.created_at));
   runs.forEach((run, index) => { const option = new Option(`${names[index]}${names.filter(name => name === names[index]).length > 1 ? ` · ${shortDate(run.created_at)}` : ""}`, run.id); option.title = run.name || run.id; select.append(option); });
   select.value = state.run?.id || "";
@@ -266,11 +524,11 @@ function renderStage() {
   if (!state.run) return;
   ++state.ecToken;
   const layer = activeLayer(); const stage = state.run.stages?.[layer.id] || {};
-  $("stage-number").textContent = layer.id.slice(-2);
+  $("stage-number").textContent = (nativeContract() ? (["TB_L0","EC_L0"].includes(layer.id) ? "EXP/L0" : layerDisplay(layer.id).split(" ").pop()) : layer.id.slice(-2));
   $("stage-title").textContent = layer.heading;
-  $("stage-description").textContent = stage.purpose || layer.description;
-  $("stage-input").textContent = valueText(stage.input || layer.input);
-  $("stage-output").textContent = valueText(stage.output || layer.output);
+  $("stage-description").textContent = nativeContract() ? layer.process : stage.purpose || layer.description;
+  $("stage-input").textContent = valueText(nativeContract() ? layer.input : stage.input || layer.input);
+  $("stage-output").textContent = valueText(nativeContract() ? layer.output : stage.output || layer.output);
   $("stage-dependency").textContent = valueText(stage.dependencies || layer.dependency);
   const status = stage.stale && normalizedStatus(stage.status) === "succeeded" ? "stale" : normalizedStatus(stage.status);
   $("stage-status").replaceWith(Object.assign(badge(status), { id: "stage-status" }));
@@ -295,7 +553,7 @@ function renderStage() {
     if (index) flow.append(node("span", "flow-arrow", "→"));
     const card = node("div", "flow-node"); card.append(node("strong", "", item.label), node("span", "", item.text)); flow.append(card);
   });
-  renderDependencies(); renderArtifacts();
+  renderDependencies(); renderArtifacts(); renderLayerInputs();
 }
 
 function renderDependencies() {
@@ -312,7 +570,7 @@ function renderDependencies() {
   banner.hidden = !state.run.dependency_stale;
   banner.textContent = `本次 EC 产物与选定 TB 参数或当前配置不一致，需要从 EC L1 重新校正。`;
   banner.hidden = !ecLayer || state.layer === "EC_L0" || !state.run.dependency_stale;
-  banner.textContent = "TB 参数或输入已更新，运行 EC L1 更新校正谱。";
+  banner.textContent = `TB 参数或输入已更新，运行 ${layerDisplay("EC_L1").replace("_", " ")} 更新校正谱。`;
   const unavailable = state.run.stages?.[state.layer]?.unavailable_reason;
   if (unavailable) { banner.hidden = false; banner.textContent = unavailable; }
   else if (state.layer === "EC_L0") banner.hidden = true;
@@ -339,8 +597,8 @@ function renderRun() {
   $("empty-state").hidden = !!run; $("run-workspace").hidden = !run;
   $("save-run").disabled = !run || state.busy;
   if (!run) { renderNavigation(); return; }
-  renderPayloadOptions(); $("payload").value = run.payload; $("run-identity").textContent = cleanRunName(run.name, run.payload) || "未命名试算"; $("run-identity").title = `runs/${run.id}`;
-  $("saved-at").textContent = run.updated_at ? `保存于 ${timestamp(run.updated_at)}` : "试算已持久保存";
+  renderPayloadOptions(); $("payload").value = run.payload; $("run-identity").textContent = cleanRunName(run.name, run.payload) || "未命名任务"; $("run-identity").title = `runs/${run.id}`;
+  $("saved-at").textContent = run.updated_at ? `保存于 ${timestamp(run.updated_at)}` : "任务已持久保存";
   const notes = clear($("scientific-notes"));
   for (const note of run.scientific_notes || []) notes.append(node("p", "", note));
   renderRunOptions(); renderNavigation(); renderStage(); renderJobs(); setBusy(state.busy);
@@ -429,7 +687,7 @@ function renderJobs() {
     const selectedPeak = pointId ? Number.isFinite(Number(pointParts.at(-1))) ? `${number(pointParts.at(-1), 3)} keV · CH ${pointParts.at(-2)} · ${pointId}` : String(pointId) : "";
     const only = Array.isArray(job.config?.only) ? job.config.only.join(", ") : job.config?.only;
     const scope = selectedPeak || (job.stem || only ? `当前文件 · ${job.stem || only}` : job.scope === "all" || job.representative === false ? "全部数据" : job.scope === "selected" ? "所选输入" : "代表样例");
-    summary.append(node("strong", "job-layer", job.layer || "任务"), badge(job.status), node("span", "tiny-text", scope), node("time", "job-time", timestamp(job.finished_at || job.started_at || job.created_at)));
+    summary.append(node("strong", "job-layer", layerDisplay(job.layer || "任务")), badge(job.status, job.reused_from ? "已复用" : undefined), node("span", "tiny-text", scope), node("time", "job-time", timestamp(job.finished_at || job.started_at || job.created_at)));
     row.append(summary);
     if (job.outputs?.length) { const files=node("div","job-output-files"); for (const file of job.outputs) files.append(outputFilePreview(file,job.id)); row.append(files); }
     if (job.message || job.result?.message) row.append(node("div", "job-details", valueText(job.message || job.result.message)));
@@ -456,7 +714,7 @@ function renderJobs() {
 function renderParams() {
   const data = state.surface || {}; const current = paramsFor(data.params); const baseline = paramsFor(data.baseline?.params || state.run.baseline_surface?.params);
   const table = node("table"); const head = node("thead"); const hr = node("tr");
-  ["参数", "初始基线", "当前试算", "变化"].forEach((text) => hr.append(node("th", "", text))); head.append(hr); table.append(head);
+  ["参数", "初始基线", "当前任务", "变化"].forEach((text) => hr.append(node("th", "", text))); head.append(hr); table.append(head);
   const body = node("tbody");
   for (const key of ["G0", "k", "V0", "b", "c"]) {
     const row = node("tr"); const old = baseline[key]; const now = current[key]; const diff = Number.isFinite(Number(old)) && Number.isFinite(Number(now)) && Number(old) !== 0 ? 100 * (now - old) / Math.abs(old) : null;
@@ -553,7 +811,7 @@ function residualPercent(point) {
 
 function filteredL1Files() {
   const search = $("l1-file-search").value.trim().toLowerCase(), filter = $("l1-file-filter").value || "all";
-  return (state.l1Overview?.files || []).filter(file => file.has_l0 && (!search || `${file.stem} ${file.channels[state.channel]?.temp ?? ""} ${file.channels[state.channel]?.bias ?? ""}`.toLowerCase().includes(search)) && (filter === "all" || file.status === filter));
+  return (state.l1Overview?.files || []).filter(file => (file.has_l0 || file.has_saved_spectrum) && (!search || `${file.stem} ${file.channels[state.channel]?.temp ?? ""} ${file.channels[state.channel]?.bias ?? ""}`.toLowerCase().includes(search)) && (filter === "all" || file.status === filter));
 }
 
 const l1QualityStates = {
@@ -569,7 +827,7 @@ function l1QualityContext() { return `${state.run?.id}:${state.layer}:${state.ch
 function l1QualityPoints(channel = state.channel) {
   return (state.l1Overview?.files || []).map(file => {
     const point = file.channels?.find(item => item.channel === channel) || {};
-    return { ...point, stem: file.stem, channel, id: point.id || `${state.run?.payload}:${file.stem}:${channel}`, has_l0: file.has_l0 };
+    return { ...point, stem: file.stem, channel, id: point.id || `${state.run?.payload}:${file.stem}:${channel}`, has_l0: file.has_l0 || file.has_saved_spectrum };
   });
 }
 function l1QualityStatus(point) {
@@ -668,16 +926,22 @@ function ecSourceContext() { return `${state.run?.id}:${state.channel}`; }
 function currentEcSourceKey() { return state.point?.energy_key || state.point?.stem || ""; }
 function ecSourceSpectra() { return state.ecPeakConfig?.spectra || []; }
 function currentEcSource() { return ecSourceSpectra().find(item => item.energy_key === currentEcSourceKey()); }
-function ecSourceInputSpec() { const file=state.spectrum?.point?.signal_file || state.point?.signal_file || currentEcSource()?.signal_file; return file && currentEcSourceKey().startsWith("src_") ? {stem:String(file).split(/[\\/]/).pop().replace(/_corr\.l1\.parquet$/,"")} : {}; }
+function ecSourceInputSpec() { const point=state.spectrum?.point || state.point; const file=ecObservationStem(point) || currentEcSource()?.signal_file; return file && currentEcSourceKey().startsWith("src_") ? {stem:String(file).split(/[\\/]/).pop().replace(/_corr\.l1\.parquet$/,"")} : {}; }
 function ecObservationStem(point) {
   const normalize = value => String(value).split(/[\\/]/).pop().replace(/_corr\.l1\.parquet$/i, "").replace(/\.l[01]\.parquet$/i, "");
-  if (point?.signal_file || point?.l1_stem) return normalize(point.signal_file || point.l1_stem);
   const key = point?.energy_key || point?.stem;
-  if (!key) return null;
-  if (!key.startsWith("src_")) return /_ch\d+$/i.test(key) ? key : `${key}_ch${point.channel ?? state.channel}`;
-  if (/_\d+(?:\.\d+)?m$/i.test(key)) return key;
+  if (!key) return point?.signal_file || point?.l1_stem ? normalize(point.signal_file || point.l1_stem) : null;
   const source = ecSourceSpectra().find(item => item.energy_key === key);
   const files = [...new Set((source?.source_files?.length ? source.source_files.map(file => file.name) : [source?.signal_file]).filter(Boolean).map(normalize))];
+  if (point?.signal_file || point?.l1_stem) {
+    const explicit = normalize(point.signal_file || point.l1_stem);
+    // Shared L1 indexes may use the upstream display alias. A unique current
+    // corrected observation supplies the actual filename for recomputation.
+    if (nativeContract() && point.contract_node && files.length === 1 && !files.includes(explicit)) return files[0];
+    return explicit;
+  }
+  if (!key.startsWith("src_")) return /_ch\d+$/i.test(key) ? key : `${key}_ch${point.channel ?? state.channel}`;
+  if (/_\d+(?:\.\d+)?m$/i.test(key)) return key;
   return files.length === 1 ? files[0] : null;
 }
 function ecPointMatchesObservation(point, stem) { return ecObservationStem(point) === stem; }
@@ -715,7 +979,7 @@ async function rebuildSpectrumInputs({context, family, stem}) {
     for (const {layer, ...spec} of plan) {
       if (context !== spectrumRecoveryContext()) return;
       const job = await executeJob(layer, {...spec, channel}, false);
-      if (job && normalizedStatus(job.status) !== "succeeded") throw new Error(`${layer.replace("_", " ")} 未完成，请查看运行记录。`);
+      if (job && normalizedStatus(job.status) !== "succeeded") throw new Error(`${layerDisplay(layer).replace("_", " ")} 未完成，请查看运行记录。`);
     }
     if (context === spectrumRecoveryContext()) { await loadSurfaceSafely(); notify("谱已重建。", "success"); }
   } finally {
@@ -873,7 +1137,8 @@ function ecSourceWindowOverlays() {
     if (!(Number.isFinite(bounds?.lo) && Number.isFinite(bounds?.hi) && bounds.hi>bounds.lo)) continue;
     const selected=Number(line.energy_keV)===Number(state.point?.E);
     if(!selected) shapes.push({type:"rect",xref:"x",yref:"paper",x0:bounds.lo,x1:bounds.hi,y0:0,y1:1,fillcolor:"rgba(107,132,166,.04)",line:{color:"#b8c5d6",width:1,dash:"dot"},layer:"below"});
-    annotations.push({x:(bounds.lo+bounds.hi)/2,y:1,xref:"x",yref:"paper",text:`${number(line.energy_keV,3)} keV`,showarrow:false,yanchor:"top",yshift:-5,font:{...chartFont,size:10,color:selected?chartColors.fit:"#728294"},bgcolor:"rgba(255,255,255,.85)"});
+    const center = point?.center ?? line.centers?.[String(state.channel)];
+    annotations.push({x:Number.isFinite(center) ? center : (bounds.lo+bounds.hi)/2,y:1,xref:"x",yref:"paper",text:`${number(line.energy_keV,3)} keV`,showarrow:false,yanchor:"top",yshift:-5,font:{...chartFont,size:10,color:selected?chartColors.fit:"#728294"},bgcolor:"rgba(255,255,255,.85)"});
   }
   return {shapes,annotations};
 }
@@ -924,7 +1189,7 @@ function renderL1Workspace() {
   const index = files.findIndex(file => file.stem === state.point?.stem);
   $("l1-file-position").textContent = `${index < 0 ? "—" : index + 1} / ${files.length}`;
   $("l1-prev").disabled = index <= 0; $("l1-next").disabled = !files.length || index === files.length - 1;
-  $("point-count").textContent = `${all.filter(file => file.has_l0).length} 个文件`;
+  $("point-count").textContent = `${all.filter(file => file.has_l0 || file.has_saved_spectrum).length} 个文件`;
   const channels = all.find(file => file.stem === state.point?.stem)?.channels || [], summary = clear($("l1-channel-summary"));
   for (const channel of channels) {
     const unsupported = unsupportedSpectralModel(channel.channel, channel, null), attention = !unsupported && (channel.fit_status === "failed" || hasQualityWarning(channel)), fitted = !unsupported && ["fitted", "suspect", "rejected"].includes(channel.fit_status) && !channel.pending_window;
@@ -933,7 +1198,8 @@ function renderL1Workspace() {
     card.setAttribute("aria-pressed", String(channel.channel === state.channel));
     const heading = node("span", "channel-heading"); heading.append(node("span", "channel-name", `CH ${channel.channel}`), node("span", "channel-state", unsupported ? "待定" : channel.pending_window ? "待重拟合" : channel.fit_status === "failed" ? "计算失败" : attention ? "疑似问题" : fitted ? "已拟合" : "未拟合"));
     const value = node("span", "channel-value", unsupported ? "—" : number(channel.center, 2)); if (!unsupported) value.append(node("small", "", " ADC"));
-    card.append(heading, value, node("span", "channel-quality", unsupported ? "康普顿响应" : `R² ${number(channel.rsquared, 4)}`));
+    const qualityLabel = nativeContract() ? `χ²ν ${number(channel.redchi ?? channel.chi2_reduced ?? channel.fit_quality?.redchi, 3)}` : `R² ${number(channel.rsquared, 4)}`;
+    card.append(heading, value, node("span", "channel-quality", unsupported ? "康普顿响应" : qualityLabel));
     card.title = unsupported || (channel.error ? jobErrorText(channel.error) : `CH ${channel.channel} · 峰位 ${number(channel.center, 3)} ± ${number(channel.center_err, 3)} ADC`);
     card.addEventListener("click", handleError(() => selectChannel(channel.channel))); summary.append(card);
   }
@@ -1021,7 +1287,7 @@ async function loadSurfaceSafely() {
 
 async function selectPoint(point) {
   if (state.layer.startsWith("EC")) return selectEcPoint(point);
-  const token = ++state.spectrumToken;
+  const token = ++state.spectrumToken, consumerLayer = state.layer;
   state.selecting = true;
   $("fit-spectrum").disabled = true; $("auto-fit-spectrum").disabled = true;
   $("window-lo").disabled = true; $("window-hi").disabled = true;
@@ -1056,7 +1322,7 @@ async function selectPoint(point) {
   $("window-status").textContent = "读取真实谱…";
   $("fit-spectrum").disabled = true;
   try {
-    const spectrum = await api(runPath(`/spectrum?stem=${encodeURIComponent(point.stem)}&channel=${state.channel}&layer=${state.layer === "TB_L0" ? "TB_L0" : "TB_L1"}`));
+    const spectrum = await api(runPath(`/spectrum?stem=${encodeURIComponent(point.stem)}&channel=${state.channel}&layer=${consumerLayer === "TB_L0" ? "TB_L0" : "TB_L1"}&consumer_layer=${encodeURIComponent(consumerLayer)}`));
     if (token !== state.spectrumToken) return;
     state.spectrum = spectrum;
     if (spectrum.hk_data) {
@@ -1070,7 +1336,7 @@ async function selectPoint(point) {
     $("window-lo").disabled = state.busy; $("window-hi").disabled = state.busy;
     $("window-status").textContent = unsupportedSpectralModel() ? "模型待定" : (state.run.pending_windows || []).includes(point.id) ? "待重拟合" : spectrum.fit ? "" : "未拟合";
     const params = clear($("spectrum-params"));
-    for (const [label, value] of [["峰位 / ADC", `${number(fit.center, 3)} ± ${number(fit.center_err, 3)}`], ["σ / ADC", number(fit.sigma, 3)], ["分辨率", fit.resolution === undefined ? "—" : `${number(fit.resolution * (fit.resolution > 1 ? 1 : 100), 2)}%`], ["R²", number(fit.rsquared, 5)], ["拟合模型", fit.fit_mode || fit.mode || "—"]]) {
+    for (const [label, value] of [["峰位 / ADC", `${number(fit.center, 3)} ± ${number(fit.center_err, 3)}`], ["σ / ADC", number(fit.sigma, 3)], ["分辨率", fit.resolution === undefined ? "—" : `${number(fit.resolution * (fit.resolution > 1 ? 1 : 100), 2)}%`], [nativeContract() ? "约化 χ²" : "R²", number(nativeContract() ? (fit.redchi ?? fit.chi2_reduced ?? fit.fit_quality?.redchi) : fit.rsquared, 5)], ["拟合模型", fit.fit_mode || fit.mode || "—"]]) {
       const item = node("div", "param-item"); item.append(node("span", "", label), node("strong", "", value)); params.append(item);
     }
     const quality = spectrum.input_quality;
@@ -1185,7 +1451,7 @@ async function renderL1Residual(data, range) {
   if (context !== plotContext()) return;
   $("residual-metric").textContent = `RMS ${number(Math.sqrt(residual.y.reduce((sum,y)=>sum+y*y,0)/residual.y.length),2)}`;
   $("residual-caption").textContent = "";
-  $("residual-chart").title = state.layer === "EC_L2" ? "(净计数率 − 拟合) / 传播误差；虚线 ±3" : "(计数 − 拟合) / √max(观测计数, 1)；虚线 ±3";
+  $("residual-chart").title = nativeContract() ? "(谱密度 − 拟合) / 传播误差；虚线 ±3" : state.layer === "EC_L2" ? "(净计数率 − 拟合) / 传播误差；虚线 ±3" : "(计数 − 拟合) / √max(观测计数, 1)；虚线 ±3";
 }
 
 function bindL1Axes() {
@@ -1235,6 +1501,7 @@ function updateAutoFitControls() {
 function updateCapabilityControls() {
   const reason=state.run?.stages?.[state.layer]?.unavailable_reason;
   for(const id of ["run-layer","fit-spectrum","refit-tb","auto-fit-spectrum"]) if(reason) { $(id).disabled=true; $(id).title=reason; }
+  if (!state.busy && $("run-scope").value !== "full" && ["TB_L0", "TB_L1", "EC_L0", "EC_L1", "EC_L2"].includes(state.layer) && (!state.point || state.selecting)) { $("run-layer").disabled = true; $("run-layer").title = "请先选择当前文件，或切换为全部数据"; }
   $("run-pipeline").disabled=state.busy || !state.run;
 }
 
@@ -1257,7 +1524,7 @@ async function autoFitSpectrum() {
 async function loadEcSpectrum() {
   const token = ++state.ecToken; const layer = state.layer; const runId = state.run.id; const channel = state.channel;
   clear($("artifact-preview")).append(node("p", "chart-loading", "正在读取真实 EC 脉冲数据…"));
-  const data = await api(runPath(`/ec-spectrum?layer=${encodeURIComponent(layer)}&channel=${channel}`));
+  const data = await api(runPath(`/ec-spectrum?layer=${encodeURIComponent(layer)}&channel=${channel}&consumer_layer=${encodeURIComponent(layer)}`));
   if (token !== state.ecToken || state.run.id !== runId || state.layer !== layer) return;
   const preview = clear($("artifact-preview"));
   const heading = node("div", "ec-spectrum-heading");
@@ -1273,9 +1540,9 @@ async function loadEcSpectrum() {
 }
 
 function windowShapes(lo, hi) { if (!(hi > lo)) return []; return [{ type: "rect", xref: "x", yref: "paper", x0: lo, x1: hi, y0: 0, y1: 1, fillcolor: "rgba(36,87,167,0.045)", line: { width: 0 }, layer: "below" }, ...[lo, hi].map((value) => ({ type: "line", xref: "x", yref: "paper", x0: value, x1: value, y0: 0, y1: 1, line: { color: "#6b84a6", width: 1, dash: "dash" } }))]; }
-function renderRunBadge() { $("run-state").textContent = state.loading ? "载入中" : !state.run ? "未选择试算" : state.busy ? "运行中" : state.dirty ? "待保存" : ""; $("run-state").hidden = !$("run-state").textContent; $("run-state").className = `badge ${state.busy ? "running" : state.dirty ? "stale" : "neutral"}`; }
+function renderRunBadge() { $("run-state").textContent = state.loading ? "载入中" : !state.run ? "未选择任务" : state.busy ? "运行中" : state.dirty ? "待保存" : ""; $("run-state").hidden = !$("run-state").textContent; $("run-state").className = `badge ${state.busy ? "running" : state.dirty ? "stale" : "neutral"}`; }
 function updateExcludedButton() { const excluded = isExcluded(state.point); $("toggle-excluded").textContent = excluded ? "恢复此点" : "屏蔽此点"; $("toggle-excluded").className = `button${excluded ? "" : " danger"}`; $("toggle-excluded").disabled = !state.point || state.busy; }
-function setBusy(busy) { state.busy = busy; ["run-layer", "run-pipeline", "refit-tb", "save-run", "new-run", "dataset-settings", "acquisition-settings", "run-select", "payload"].forEach((id) => { $(id).disabled = busy || (!state.run && !["new-run", "dataset-settings", "payload"].includes(id) && !(id === "run-select" && state.bootstrap?.runs?.length)); }); ["fit-spectrum", "window-lo", "window-hi","l1-fit-all-channels"].forEach((id) => { $(id).disabled = busy || state.selecting || !state.spectrum; }); $("review-next-layer").disabled = busy || state.selecting || state.loading; $("apply-tb-version").disabled = busy || !$("tb-version-select").value; $("channel").disabled = state.loading; $("point-select").disabled = state.loading || busy; updateAutoFitControls(); if (state.selecting) $("auto-fit-spectrum").disabled = true; updateExcludedButton(); renderRunBadge(); updateCapabilityControls(); updateSpectralModelControls(); renderEcReviewFiles(); updateUnpackControls(); updateEcSourceControls(); }
+function setBusy(busy) { state.busy = busy; ["run-layer", "run-pipeline", "refit-tb", "save-run", "new-run", "dataset-settings", "acquisition-settings", "run-select", "payload"].forEach((id) => { $(id).disabled = busy || (!state.run && !["new-run", "dataset-settings", "payload"].includes(id) && !(id === "run-select" && state.bootstrap?.runs?.length)); }); ["fit-spectrum", "window-lo", "window-hi","l1-fit-all-channels"].forEach((id) => { $(id).disabled = busy || state.selecting || !state.spectrum; }); $("review-next-layer").disabled = busy || state.selecting || state.loading; $("apply-tb-version").disabled = busy || !$("tb-version-select").value; $("channel").disabled = state.loading; $("point-select").disabled = state.loading || busy; updateAutoFitControls(); if (state.selecting) $("auto-fit-spectrum").disabled = true; updateExcludedButton(); renderRunBadge(); updateCapabilityControls(); updateSpectralModelControls(); renderEcReviewFiles(); updateUnpackControls(); updateEcSourceControls(); renderLayerInputs(); }
 
 async function resizeCharts() {
   if (!window.Plotly) return;
@@ -1293,7 +1560,7 @@ async function resizeCharts() {
   }
   installWindowHandles();
 }
-async function selectLayer(id) { rememberView(); if (state.ecPeakDirty) await saveEcPeakConfig(false); if (state.dirty) await saveRevision({}, true); ++state.loadToken; ++state.spectrumToken; state.selecting = false; state.layer = id; $("ec-source-workbench").hidden = id !== "EC_L2"; $("run-scope").value = "representative"; $("unpack-search").value = ""; state.surface = null; state.ecOverview = null; state.point = null; state.spectrum = null; rememberView(); ++state.spectrumToken; renderNavigation(); if (state.run) { renderStage(); await loadSurfaceSafely(); requestAnimationFrame(resizeCharts); } }
+async function selectLayer(id) { closeLayerInputChooser(); rememberView(); if (state.ecPeakDirty) await saveEcPeakConfig(false); if (state.dirty) await saveRevision({}, true); ++state.loadToken; ++state.spectrumToken; state.selecting = false; state.layer = id; $("ec-source-workbench").hidden = id !== "EC_L2"; $("run-scope").value = "representative"; $("unpack-search").value = ""; state.surface = null; state.ecOverview = null; state.point = null; state.spectrum = null; rememberView(); ++state.spectrumToken; renderNavigation(); if (state.run) { renderStage(); await loadSurfaceSafely(); requestAnimationFrame(resizeCharts); } }
 
 async function refreshRun(reloadCharts = true) {
   if (!state.run) return;
@@ -1303,6 +1570,7 @@ async function refreshRun(reloadCharts = true) {
 
 async function openRun(id) {
   if (!id) return;
+  closeLayerInputChooser();
   rememberView(); const token = ++state.openToken; if (state.ecPeakDirty) await saveEcPeakConfig(false);
   if (state.dirty) await saveRevision({}, true);
   if (token !== state.openToken) return;
@@ -1326,7 +1594,7 @@ async function openRun(id) {
   } finally {
     if (token === state.openToken) { state.loading = false; setBusy(false); renderRunOptions(); }
   }
-  if (running && token === state.openToken) restorePolling(running).catch(messageError);
+  if ((running || state.run?.update_chain?.status === "running") && token === state.openToken) restorePolling(running).catch(messageError);
 }
 
 async function bootstrap() {
@@ -1356,6 +1624,7 @@ function openCreateDialog(payload = $("payload").value) {
   $("dataset-raw-dir").placeholder = state.bootstrap?.defaults?.raw_dir || "留空使用默认数据目录";
   $("dataset-product-dir").placeholder = state.bootstrap?.defaults?.product_dir || "留空使用默认 products 目录";
   $("dataset-create-error").hidden = true; $("new-run-dialog").showModal(); sourceLibraryRefresh().catch(datasetError);
+  refreshPersonalTrials().catch(datasetError);
   if (state.datasetPathsDirty) datasetPathsChanged();
 }
 function datasetPathsChanged() {
@@ -1370,11 +1639,11 @@ function datasetPathsChanged() {
 async function createRun(event) {
   event.preventDefault(); const button = event.submitter; if (button) button.disabled = true; $("dataset-create-error").hidden = true;
   try {
-    if (state.datasetPathsDirty || !$("dataset-select").value) throw new Error("请先扫描并识别目录，再创建试算。");
+    if (state.datasetPathsDirty || !$("dataset-select").value) throw new Error("请先扫描并识别目录，再创建任务。");
     const payload = $("new-run-payload").value.trim(); if (!payload) throw new Error("请填写载荷编号。");
     const result = await api("/api/runs", { method: "POST", body: { dataset_id: $("dataset-select").value || undefined, payload, name: $("new-run-name").value.trim() || undefined, ...registryCreateSpec() } });
   $("new-run-dialog").close(); state.layer = "TB_L0"; state.bootstrap = await api("/api/bootstrap"); state.datasets = state.bootstrap.datasets || state.datasets; await openRun((result.run || result).id);
-    notify("试算已创建。", "success");
+    notify("任务已创建。", "success");
   } catch (error) { const message = $("dataset-create-error"); message.textContent = error.message; message.hidden = false; message.tabIndex = -1; message.focus(); } finally { if (button) button.disabled = !!state.datasetPathsDirty || !$("dataset-select").value; }
 }
 
@@ -1433,8 +1702,9 @@ function showAnalysisView(view) {
 
 async function restorePolling(job) {
   const token = ++state.pollToken; const runId = state.run.id;
-  setBusy(true); notify(`${job.layer} 正在运行，已恢复进度。`, "info");
+  setBusy(true); notify(`${layerDisplay(job?.layer || state.layer)} 正在运行，已恢复进度。`, "info");
   try {
+    if (state.run.update_chain?.status === "running") { await pollInputUpdateChain(runId, token); return; }
     while (["queued", "running", "pending"].includes(job.status) && token === state.pollToken) {
       await new Promise((resolve) => setTimeout(resolve, 1000));
       const response = await api(`/api/runs/${encodeURIComponent(runId)}/jobs/${encodeURIComponent(job.id)}?compact=1`); job = response.job || response;
@@ -1444,8 +1714,24 @@ async function restorePolling(job) {
     }
     if (token !== state.pollToken) return;
     await refreshRun(true);
-    notify(job.status === "partial" ? `${job.layer} 部分完成，可用结果已保存，请筛选需检查的文件。` : normalizedStatus(job.status) === "succeeded" ? `${job.layer} 计算完成。` : `${job.layer} 计算失败：${jobErrorText(job.error || "详见运行记录")}`, job.status === "partial" ? "warning" : normalizedStatus(job.status) === "succeeded" ? "success" : "error");
+    notify(job.status === "partial" ? `${layerDisplay(job.layer)} 部分完成，可用结果已保存，请筛选需检查的文件。` : normalizedStatus(job.status) === "succeeded" ? `${layerDisplay(job.layer)} ${job.reused_from ? "已复用已有结果" : "计算完成"}。` : `${layerDisplay(job.layer)} 计算失败：${jobErrorText(job.error || "详见运行记录")}`, job.status === "partial" ? "warning" : normalizedStatus(job.status) === "succeeded" ? "success" : "error");
   } finally { if (token === state.pollToken) setBusy(false); }
+}
+
+async function pollInputUpdateChain(runId, token) {
+  while (state.run?.update_chain?.status === "running" && token === state.pollToken && state.run.id === runId) {
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    const run = await api(`/api/runs/${encodeURIComponent(runId)}?compact=1`);
+    if (token !== state.pollToken || state.run?.id !== runId) return;
+    state.run = run; renderRun();
+    const chain = run.update_chain, step = chain?.steps?.[chain.position || 0];
+    if (chain?.status === "running") notify(`正在更新 ${Math.min((chain.position || 0) + 1, chain.steps?.length || 1)} / ${chain.steps?.length || 1}${step?.layer ? ` · ${layerDisplay(step.layer)}` : ""}`, "info");
+  }
+  if (token !== state.pollToken || state.run?.id !== runId) return;
+  await loadSurfaceSafely();
+  const chain = state.run.update_chain;
+  if (chain?.status === "failed") notify(`更新失败：${jobErrorText(chain.error || "详见运行记录")}`, "error");
+  else notify("所选范围已更新。", "success");
 }
 
 function syncJobStage(job) {
@@ -1465,7 +1751,7 @@ async function executeJob(layer, extra = {}, manageBusy = true) {
     state.run.jobs = [...(state.run.jobs || []).filter((item) => item.id !== job.id), job];
     state.run.stages = { ...(state.run.stages || {}), [layer]: { ...(state.run.stages?.[layer] || {}), status: job.status || "queued" } };
     renderJobs(); renderNavigation(); renderStage(); renderL1Progress(job);
-    notify(`${layer.replace("_", " ")} 正在运行…`, "info");
+    notify(`${layerDisplay(layer).replace("_", " ")} 正在运行…`, "info");
     while (["queued", "running", "pending"].includes(job.status)) {
       await new Promise((resolve) => setTimeout(resolve, 850));
       const response = await api(runPath(`/jobs/${encodeURIComponent(job.id)}?compact=1`)); job = response.job || response;
@@ -1473,9 +1759,9 @@ async function executeJob(layer, extra = {}, manageBusy = true) {
       syncJobStage(job); if ($("records-drawer").open) renderJobs();
     }
     await refreshRun(true);
-    if (job.status === "partial") { const summary=job.result?.summary; notify(`${layer.replace("_", " ")} 部分完成${summary ? `：${summary.channels_succeeded} 通道完成，${summary.channels_failed} 通道计算失败` : ""}。可用结果已保存。`, "warning"); return job; }
-    if (normalizedStatus(job.status) !== "succeeded") throw new Error(`${layer.replace("_", " ")} 失败：${jobErrorText(job.error || job.message)}`);
-    notify(`${layer.replace("_", " ")} 已完成。`, "success");
+    if (job.status === "partial") { const summary=job.result?.summary; notify(`${layerDisplay(layer).replace("_", " ")} 部分完成${summary ? `：${summary.channels_succeeded} 通道完成，${summary.channels_failed} 通道计算失败` : ""}。可用结果已保存。`, "warning"); return job; }
+    if (normalizedStatus(job.status) !== "succeeded") throw new Error(`${layerDisplay(layer).replace("_", " ")} 失败：${jobErrorText(job.error || job.message)}`);
+    notify(`${layerDisplay(layer).replace("_", " ")} 已完成。`, "success");
     return job;
   } finally { if (manageBusy) setBusy(false); }
 }
@@ -1489,7 +1775,7 @@ async function fitSpectrum() {
   fitFeedback(`正在按当前窗口拟合 · CH ${channel}…`, "running");
   try {
     await saveRevision(patch, true);
-    if (runId !== state.run.id) throw new Error("试算已切换，请在当前试算重新选择拟合。");
+    if (runId !== state.run.id) throw new Error("任务已切换，请在当前任务重新选择拟合。");
     const job = await executeJob(ec ? "EC_L2" : "TB_L1", ec ? { point_id:point.id,channel,automatic_window:false,...binning,...ecSourceInputSpec() } : { stem:point.stem,channel,fit_channels:[channel],automatic_window:false }, false);
     if (state.run.id===runId && state.point?.id===point.id && state.channel===channel) fitCompletionFeedback(job,false,channel);
     if (job?.status !== "partial") notify(`${point.stem} · CH ${channel} 拟合已完成。`, "success");
@@ -1503,7 +1789,7 @@ async function fitAllL1Channels() {
   setBusy(true);
   try {
     if (state.dirty) await saveRevision({},true);
-    if (runId !== state.run.id) throw new Error("试算已切换，请在当前试算重新选择拟合。");
+    if (runId !== state.run.id) throw new Error("任务已切换，请在当前任务重新选择拟合。");
     await executeJob("TB_L1",selected,false);
   } finally { setBusy(false); }
 }
@@ -1517,7 +1803,7 @@ async function runCurrentLayer() {
   setBusy(true);
   try {
     if (state.dirty) await saveRevision({},true);
-    if (runId !== state.run.id) throw new Error("试算已切换，请在当前试算重新选择计算。");
+    if (runId !== state.run.id) throw new Error("任务已切换，请在当前任务重新选择计算。");
     await executeJob(layer,{...extra,representative:!full},false);
   } finally { setBusy(false); }
 }
@@ -1544,6 +1830,7 @@ function configureLayerPanels() {
   $("inspector-title").textContent = isUnpackLayer() ? "解包结果详情" : ec ? raw ? "数据文件详情" : "能峰复核" : l1 ? "拟合详情" : "工况能谱";
   $("point-field-label").textContent = ec ? raw ? "数据文件" : "能线 / 源峰" : "工况文件";
   $("surface-mode").hidden = state.layer !== "TB_L2";
+  $("ec-axis-scale").hidden = state.layer !== "EC_L3";
   $("ec-detail-mode").hidden = state.layer !== "EC_L3";
   $("spectrum-chart").hidden = raw || review;
   $("dependency-toolbar").hidden = !ec || state.layer === "EC_L0";
@@ -1552,7 +1839,7 @@ function configureLayerPanels() {
   if(raw) $("peak-diagnostics").hidden = true;
   document.querySelector(".spectrum-legend").hidden = raw || review;
   $("refit-tb").hidden = raw;
-  $("refit-tb").textContent = ec ? "计算 EC L3" : l1 ? "计算 TB L2" : "重新拟合 TB";
+  $("refit-tb").textContent = ec ? `计算 ${layerDisplay("EC_L3")}` : l1 ? "计算 TB L2" : "重新拟合 TB";
   $("fitting-help").textContent = "";
   $("analysis-tab-residual").firstChild.textContent = raw ? "数据与元信息 " : "拟合残差 ";
   $("analysis-tab-comparison").textContent = raw ? "输入与依赖" : ec ? "刻度参数" : "参数比较";
@@ -1636,7 +1923,10 @@ async function loadEcAnalysis() {
   let points = overview.points || [];
   if (raw) {
     let files = overview.files || [];
-    if (!files.length) files = artifactsForLayer().filter((a) => /\.parquet$/i.test(a.name || a.path)).map((a) => ({ stem: String(a.name || a.path).split(/[\\/]/).pop().replace(/\.l[01]\.parquet$/, ""), path: a.path }));
+    if (!Object.prototype.hasOwnProperty.call(overview, "files")) {
+      const suffix = layer === "EC_L1" ? /_corr\.l1\.parquet$/i : /\.l0\.parquet$/i;
+      files = artifactsForLayer().filter(item => suffix.test(item.name || item.path)).map(item => ({ stem: String(item.name || item.path).split(/[\\/]/).pop().replace(layer === "EC_L1" ? /_corr\.l1\.parquet$/i : /\.l0\.parquet$/i, ""), path: item.path }));
+    }
     points = files.map((f) => typeof f === "string" ? { id: f, stem: f } : { ...f, id: f.id || f.stem, stem: f.stem || f.name }); overview.files = points;
   }
   const previousId = state.point?.id || preferredPoint().id, previousStem = state.point?.stem || preferredPoint().stem; const select = clear($("point-select"));
@@ -1645,14 +1935,36 @@ async function loadEcAnalysis() {
   if (token !== state.loadToken || runId !== state.run.id || layer !== state.layer || selection !== state.spectrumToken) return;
   const selected = points.find((p) => p.id === previousId) || points.find((p) => p.stem === previousStem) || points.find((p) => !isExcluded(p)) || points[0];
   renderUnpackWorkspace();
-  if (selected) await selectEcPoint(selected); else { state.point = null; state.spectrum = null; chartMessage("spectrum-chart", "本通道没有可用能峰或数据文件，请检查目录或运行上游层。"); if (raw) chartMessage("surface-chart", "本层暂无可用 Parquet 输入。"); }
+  if (selected) await selectEcPoint(selected); else {
+    state.point = null; state.spectrum = null; clear($("spectrum-params")); clear($("point-condition")); $("surface-caption").textContent = ""; $("window-status").textContent = "";
+    chartMessage("spectrum-chart", "暂无可用能谱");
+    if (raw) {
+      chartMessage("surface-chart", layer === "EC_L1" ? "尚无校正谱" : "尚无解析结果"); chartMessage("residual-chart", "");
+      const context = viewContext(), actions = node("div", "layer-empty-actions"), choose = node("button", "button", layer === "EC_L1" ? "选择输入" : "选择数据"); choose.type = "button";
+      choose.addEventListener("click", handleError(() => { if (context === viewContext()) return layer === "EC_L1" ? openLayerInputChooser("data") : openCreateDialog(); })); actions.append(choose);
+      if (layer === "EC_L1") { const compute = node("button", "button primary", "校正全部数据"); compute.type = "button"; compute.disabled = state.busy || !state.run.selected_tb; compute.addEventListener("click", handleError(() => { if (context === viewContext()) return executeJob(layer, { representative: false }); })); actions.append(compute); }
+      $("surface-chart").append(actions);
+    }
+  }
   renderEcSourceConfig();
   setBusy(state.busy);
 }
 
 function bindEcClicks(chart) { if (typeof chart.removeAllListeners === "function") chart.removeAllListeners("plotly_click"); chart.on("plotly_click", (event) => { const id = event.points.find((p) => p.customdata)?.customdata; const point = state.ecOverview?.points?.find((p) => p.id === id); if (point) selectEcPoint(point).catch(messageError); }); }
 
-function ecPrediction(p) { const coef = state.ecOverview?.params?.EC_low || state.ecOverview?.params?.EC_high || state.ecOverview?.calibration?.EC_low; return Array.isArray(coef) && coef.length === 3 ? coef[0] * p.center * p.center + coef[1] * p.center + coef[2] : null; }
+function ecPrediction(p) {
+  if (Object.prototype.hasOwnProperty.call(p, "predicted_energy"))
+    return Number.isFinite(p.predicted_energy) ? p.predicted_energy : null;
+  const data = state.ecOverview || {}, params = data.params || data.calibration || {};
+  let coef;
+  if (nativeContract()) {
+    const low = data.energy_split ?? 51, high = data.energy_split_high ?? 55;
+    coef = p.E < low ? params.EC_low : p.E >= high ? params.EC_high : null;
+  } else coef = params.EC_low || params.EC_high;
+  if (!Number.isFinite(p.center) || !Array.isArray(coef) || coef.length !== 3 || !coef.every(Number.isFinite)) return null;
+  const energy = coef[0] * p.center * p.center + coef[1] * p.center + coef[2];
+  return Number.isFinite(energy) ? energy : null;
+}
 function ecPointStatus(point) {
   if (isExcluded(point)) return "人工屏蔽";
   if (point.fit_status === "model_pending" || point.unsupported_spectral_model) return "模型待定";
@@ -1668,16 +1980,17 @@ async function renderEcOverview() {
   if (state.layer === "EC_L2") { renderEcReviewFiles(); return; }
   $("residual-chart").classList.remove("metadata-chart");
   const traces = [];
-  if (l3 && data.curve?.x?.length) traces.push({ type: "scatter", mode: "lines", x: data.curve.x, y: data.curve.y, line: { color: chartColors.fit, width: 1.8 }, name: "E = f(ADC)", hoverinfo: "skip" });
+  const scale = $("ec-axis-scale").value === "linear" ? "linear" : "log";
+  if (l3 && data.curve?.x?.length) traces.push({ type: "scatter", mode: "lines", x: data.curve.x, y: data.curve.y, connectgaps: false, line: { color: chartColors.fit, width: 1.8 }, name: "E = f(ADC)", hoverinfo: "skip" });
   const x = (p) => l3 ? p.center : p.E, y = (p) => l3 ? p.E : p.center;
   traces.push({ type: "scatter", mode: "markers", x: points.map(x), y: points.map(y), error_y: l3 ? undefined : { type: "data", array: points.map((p) => p.center_err || 0), visible: true, thickness: 1, color: "#6888b1" }, customdata: points.map((p) => p.id), text: points.map((p) => `${p.stem}<br>${number(p.E, 3)} keV · ${ecPointStatus(p)}`), marker: { color: points.map((p) => isExcluded(p) ? chartColors.excluded : pointUsage(p) === false ? chartColors.muted : chartColors.blue), symbol: points.map((p) => isExcluded(p) ? "x" : "circle"), size: 8, line: { color: "#fff", width: .8 } }, name: "真实能峰", hovertemplate: "%{text}<br>横坐标 %{x:.3f}<br>纵坐标 %{y:.3f}<extra></extra>" });
   if (state.point && points.some((p) => p.id === state.point.id)) traces.push({ type: "scatter", mode: "markers", x: [x(state.point)], y: [y(state.point)], customdata: [state.point.id], marker: { size: 13, color: "rgba(0,0,0,0)", line: { color: chartColors.fit, width: 2 } }, hoverinfo: "skip", name: "当前选中" });
-  await Plotly.react(plotTarget($("surface-chart")), traces, basicPlotLayout(l3 ? "校正峰位 / ADC" : "已知能量 / keV", l3 ? "能量 / keV" : "校正峰位 / ADC", { uirevision: `${state.run.id}-${state.layer}-${state.channel}` }), plotConfig); if (context !== plotContext()) return; bindEcClicks($("surface-chart"));
+  await Plotly.react(plotTarget($("surface-chart")), traces, basicPlotLayout(l3 ? "校正峰位 / ADC" : "已知能量 / keV", l3 ? "能量 / keV" : "校正峰位 / ADC", { uirevision: `${state.run.id}-${state.layer}-${state.channel}-${scale}`, xaxis: { ...axisStyle, type: scale, title: { text: "校正峰位 / ADC", standoff: 7 }, exponentformat: "power" }, yaxis: { ...axisStyle, type: scale, title: { text: "能量 / keV", standoff: 7 }, exponentformat: "power" } }), plotConfig); if (context !== plotContext()) return; bindEcClicks($("surface-chart"));
   if (context !== plotContext()) return;
   const showResidual = l3 && $("ec-detail-mode").value === "residual";
   const secondary = [{ type: "scatter", mode: "markers", x: points.map((p) => p.E), y: points.map((p) => showResidual ? p.residual_percent ?? (ecPrediction(p) === null ? null : 100 * (ecPrediction(p) - p.E) / p.E) : p.resolution), customdata: points.map((p) => p.id), text: points.map((p) => `${p.stem} · ${number(p.E, 3)} keV<br>${ecPointStatus(p)}`), marker: { color: points.map((p) => isExcluded(p) ? chartColors.excluded : pointUsage(p) === false ? chartColors.muted : chartColors.blue), symbol: points.map((p) => isExcluded(p) ? "x" : "circle"), size: 7 }, hovertemplate: "%{text}<br>%{y:.4f}%<extra></extra>" }];
   if (!showResidual && data.resolution_curve?.x?.length) secondary.unshift({ type: "scatter", mode: "lines", x: data.resolution_curve.x, y: data.resolution_curve.y, line: { color: chartColors.fit, width: 1.6 }, hoverinfo: "skip" });
-  await Plotly.react(plotTarget($("residual-chart")), secondary, basicPlotLayout("能量 / keV", showResidual ? "能量残差 / %" : "分辨率 / %", { margin: { l: 65, r: 25, t: 10, b: 42 }, yaxis: { ...axisStyle, title: { text: showResidual ? "能量残差 / %" : "分辨率 / %" }, zeroline: true, zerolinecolor: "#9daab6" } }), plotConfig); if (context !== plotContext()) return; bindEcClicks($("residual-chart"));
+  await Plotly.react(plotTarget($("residual-chart")), secondary, basicPlotLayout("能量 / keV", showResidual ? "能量残差 / %" : "分辨率 / %", { margin: { l: 65, r: 25, t: 10, b: 42 }, uirevision: `${state.run.id}-${state.layer}-${state.channel}-${scale}-${showResidual}`, xaxis: { ...axisStyle, type: scale, title: { text: "能量 / keV", standoff: 7 }, exponentformat: "power" }, yaxis: { ...axisStyle, type: "linear", title: { text: showResidual ? "能量残差 / %" : "分辨率 / %" }, zeroline: true, zerolinecolor: "#9daab6" } }), plotConfig); if (context !== plotContext()) return; bindEcClicks($("residual-chart"));
   if (context !== plotContext()) return;
   $("surface-caption").textContent = "";
   $("point-count").textContent = `${points.filter(isUsed).length} / ${points.length} 参与 L3`;
@@ -1687,7 +2000,7 @@ async function renderEcOverview() {
 
 function renderEcParams() {
   const data = state.ecOverview || {}, params = data.params || data.calibration || {}, baseline = data.baseline?.params || data.baseline?.calibration || {};
-  const table = node("table"), head = node("tr"); ["参数", "初始基线", "当前试算", "变化 Δ"].forEach((v) => head.append(node("th", "", v))); table.append(head);
+  const table = node("table"), head = node("tr"); ["参数", "初始基线", "当前任务", "变化 Δ"].forEach((v) => head.append(node("th", "", v))); table.append(head);
   const display = (value) => Array.isArray(value) ? value.map((n) => number(n, 7)).join(" · ") : number(value, 7);
   const difference = (before, after) => before !== null && before !== undefined && after !== null && after !== undefined && Number.isFinite(Number(before)) && Number.isFinite(Number(after)) ? Number(after) - Number(before) : null;
   for (const key of new Set([...Object.keys(baseline), ...Object.keys(params)])) {
@@ -1732,7 +2045,7 @@ async function selectEcPoint(point) {
   chartMessage(isPeakReviewLayer() ? "surface-chart" : "spectrum-chart", "正在读取真实校正谱…");
   const query = raw ? `layer=${layer}&stem=${encodeURIComponent(point.stem)}&channel=${state.channel}` : `layer=EC_L2&point_id=${encodeURIComponent(point.id)}&channel=${state.channel}`;
   let spectrum;
-  try { spectrum = await api(runPath(`/ec-spectrum?${query}`)); }
+  try { spectrum = await api(runPath(`/ec-spectrum?${query}&consumer_layer=${encodeURIComponent(layer)}`)); }
   catch(error) {
     if (token===state.spectrumToken && layer===state.layer) {
       state.selecting=false; setBusy(state.busy);
@@ -1748,7 +2061,10 @@ async function selectEcPoint(point) {
   displayWindowValue("window-lo", override?.lo ?? spectrum.lo ?? fit.lo ?? point.lo ?? ""); displayWindowValue("window-hi", override?.hi ?? spectrum.hi ?? fit.hi ?? point.hi ?? "");
   $("window-status").textContent = (state.run.pending_ec_windows || []).includes(point.id) || point.pending_window ? "待重拟合" : spectrum.fit ? "" : "未拟合";
   const holder = clear($("spectrum-params"));
-  if (!raw) for (const [label, value] of [["峰位 / ADC", `${number(fit.center, 3)} ± ${number(fit.center_err, 3)}`], ["σ / ADC", number(fit.sigma, 3)], ["R²", number(fit.rsquared, 5)], ["拟合模型", fit.fit_mode || "—"]]) { const item = node("div", "param-item"); item.append(node("span", "", label), node("strong", "", value)); holder.append(item); }
+  if (!raw) for (const [label, value] of [["峰位 / ADC", `${number(fit.center, 3)} ± ${number(fit.center_err, 3)}`], ["σ / ADC", number(fit.sigma, 3)], [nativeContract() ? "约化 χ²" : "R²", number(nativeContract() ? (fit.redchi ?? fit.chi2_reduced ?? fit.fit_quality?.redchi) : fit.rsquared, 5)], ["拟合模型", fit.fit_mode || "—"]]) { const item = node("div", "param-item"); item.append(node("span", "", label), node("strong", "", value)); holder.append(item); }
+  if (!raw && nativeContract()) for (const [label,value] of [["主谱曝光 / s",fit.primary_exposure_s],["本底曝光 / s",fit.background_exposure_s]]) {
+    const item=node("div","param-item"); item.append(node("span","",label),node("strong","",number(value,3))); holder.append(item);
+  }
   if (!raw && spectrum.curve?.note) { const item = node("div", "param-item wide"); item.append(node("span", "", "历史曲线说明"), node("strong", "", "历史记录缺少背景参数，图中仅显示高斯峰分量；重拟合后保存完整曲线。")); holder.append(item); }
   if (!raw && point.quality_reasons?.length) { const item = node("div", "param-item wide"); item.append(node("span", "", "拟合问题提示"), node("strong", "", point.quality_reasons.join(" · "))); holder.append(item); }
   renderSpectrumProvenance(spectrum); renderEcSourceConfig();
@@ -1832,7 +2148,35 @@ function renderDatasetOptions(payload) {
   const selected = payload ? state.datasets.find((d) => datasetMatchesPayload(d,payload)) : state.datasets[0]; if (selected) select.value = selected.id; else select.append(new Option("没有可用数据集，请扫描目录", ""));
   updateSelectedDataset();
 }
-function updateSelectedDataset() { const dataset = state.datasets.find((d) => d.id === $("dataset-select").value); const holder = clear($("dataset-paths")); if (!dataset) return; $("new-run-payload").value = dataset.payload || dataset.source_payload || ""; holder.append(node("span", "", `数据：${dataset.raw_dir || "未选择"}`), node("span", "", `产品：${dataset.product_dir || "未选择"}`)); registryDatasetSelection().catch(datasetError); }
+function updateSelectedDataset() {
+  const dataset = state.datasets.find((d) => d.id === $("dataset-select").value), holder = clear($("dataset-paths"));
+  renderPersonalTrials(dataset);
+  if (!dataset) return;
+  $("new-run-payload").value = dataset.payload || dataset.source_payload || "";
+  holder.append(node("span", "", `数据：${dataset.raw_dir || "未选择"}`), node("span", "", `产品：${dataset.product_dir || "未选择"}`));
+  registryDatasetSelection().catch(datasetError);
+}
+function renderPersonalTrials(dataset) {
+  const previous = $("dataset-run-select").value;
+  const saved = clear($("dataset-run-select")), runs = dataset?.personal_runs || [];
+  $("dataset-saved-runs").hidden = !runs.length;
+  for (const run of runs) {
+    const version = run.acquisition_preset?.version;
+    const option = new Option(`${run.name || run.id}${version ? ` · v${version}` : ""}`, run.id);
+    option.title = run.products_dir; saved.append(option);
+  }
+  if (runs.some(run => run.id === previous)) saved.value = previous;
+}
+async function refreshPersonalTrials() {
+  const token = state.personalIndexToken = (state.personalIndexToken || 0) + 1;
+  const index = await api("/api/workspace-index");
+  if (token !== state.personalIndexToken) return;
+  for (const dataset of state.datasets) dataset.personal_runs = (index.runs || []).filter(run =>
+    (dataset.source_id && run.source_id === dataset.source_id) ||
+    (dataset.raw_dir && run.source?.raw_dir === dataset.raw_dir) || run.products_dir === dataset.product_dir);
+  if ($("new-run-dialog").open && !state.datasetPathsDirty)
+    renderPersonalTrials(state.datasets.find(dataset => dataset.id === $("dataset-select").value));
+}
 function datasetError(error) { $("dataset-scan-state").textContent = error.message; $("dataset-scan-state").className = "scan-error"; }
 async function scanDatasets(preferredPayload) { const button = $("scan-datasets"), submit = $("new-run-form").querySelector('[type="submit"]'), token = (state.datasetScanToken || 0) + 1; state.datasetScanToken = token; state.datasets = []; clear($("dataset-select")).append(new Option("正在扫描目录…", "")); clear($("dataset-paths")); button.disabled = true; submit.disabled = true; $("dataset-scan-state").textContent = "正在扫描目录…"; try { const result = await api("/api/datasets/scan", { method: "POST", body: { raw_dir: $("dataset-raw-dir").value.trim() || undefined, product_dir: $("dataset-product-dir").value.trim() || undefined } }); if (token !== state.datasetScanToken) return; state.datasets = result.datasets || []; state.datasetPathsDirty = false; renderDatasetOptions(typeof preferredPayload === "string" ? preferredPayload : undefined); $("dataset-scan-state").textContent = `找到 ${state.datasets.length} 个数据集`; $("dataset-scan-state").className = ""; if (!state.datasets.length) throw new Error("未发现可识别的数据或产品。请检查目录层级。"); } catch (error) { if (token !== state.datasetScanToken) return; throw error; } finally { if (token === state.datasetScanToken) { button.disabled = false; submit.disabled = !state.datasets.length || state.datasetPathsDirty; } } }
 
@@ -1860,7 +2204,7 @@ async function loadTbVersions() {
   $("tb-binding-state").textContent = "";
   $("apply-tb-version").disabled = state.busy || !select.value;
 }
-async function applyTbVersion() { if (state.dirty) await saveRevision({}, true); const id = $("tb-version-select").value; if (!id) throw new Error("请先选择 TB L2 参数包。"); state.run = await api(runPath("/dependency"), { method: "PATCH", body: { tb_version_id: id } }); state.run = state.run.run || state.run; renderRun(); await loadSurfaceSafely(); notify("已应用 TB 参数，运行 EC L1 更新校正谱。", "success"); }
+async function applyTbVersion() { if (state.dirty) await saveRevision({}, true); const id = $("tb-version-select").value; if (!id) throw new Error("请先选择 TB L2 参数包。"); state.run = await api(runPath("/dependency"), { method: "PATCH", body: { tb_version_id: id } }); state.run = state.run.run || state.run; renderRun(); await loadSurfaceSafely(); notify(`已应用 TB 参数，运行 ${layerDisplay("EC_L1").replace("_", " ")} 更新校正谱。`, "success"); }
 
 function pipelinePlan(mode, tbStem, ecStem) {
   if (mode === "all") return layers.map(layer => ({layer:layer.id,representative:false}));
@@ -1870,7 +2214,8 @@ function pipelinePlan(mode, tbStem, ecStem) {
   }
   if (!ecStem) throw new Error("请选择 EC 文件。");
   const rows = state.run.inventory?.raw?.reading_preview?.rows || [], signal = rows.find(row => row.stem === ecStem);
-  const backgrounds = signal?.kind === "source" ? rows.filter(row => row.kind === "background").map(row=>row.stem) : [];
+  const backgrounds = signal?.kind === "source" ? rows.filter(row => row.kind === "background").map(row=>row.stem)
+    : nativeContract() && signal?.kind === "xray" ? rows.filter(row=>row.kind === "xray" && Number(row.energy_keV) === Number(signal.energy_keV) && Number(row.channel) === (Number(signal.channel)+1)%4).map(row=>row.stem) : [];
   return [...new Set([...backgrounds,ecStem])].flatMap(stem=>["EC_L0","EC_L1"].map(layer=>({layer,stem,representative:false}))).concat({layer:"EC_L2",stem:ecStem,representative:false});
 }
 function ensurePipelineDialog() {
@@ -1878,7 +2223,7 @@ function ensurePipelineDialog() {
   const dialog = node("dialog","workflow-dialog"); dialog.id="pipeline-dialog";
   const heading=node("div","dialog-title"); heading.append(node("h2","","运行流程")); const close=node("button","icon-button","×"); close.setAttribute("aria-label","关闭运行流程"); close.addEventListener("click",()=>dialog.close()); heading.append(close); dialog.append(heading);
   const modeLabel=node("label","field-label","处理范围"), mode=node("select","full-width"); mode.id="pipeline-mode"; mode.setAttribute("aria-label","流程范围");
-  for (const [value,label] of [["tb","TB 当前文件 · L0 → L1"],["ec","EC 当前文件 · L0 → L2"],["all","全部数据 · TB / EC 七层"]]) mode.append(new Option(label,value));
+  for (const [value,label] of [["tb","TB 当前文件 · L0 → L1"],["ec","EC 当前文件 · L0 → L2"],["all","全部数据 · TB / EC 全流程"]]) mode.append(new Option(label,value));
   modeLabel.append(mode); dialog.append(modeLabel);
   for (const [family,label] of [["tb","TB 文件"],["ec","EC 文件"]]) { const field=node("label","field-label",label); field.id=`pipeline-${family}-field`; const input=node("select","full-width"); input.id=`pipeline-${family}-file`; input.setAttribute("aria-label",label); field.append(input); dialog.append(field); input.addEventListener("change",renderPipelinePlan); }
   const preview=node("ol","workflow-plan"); preview.id="pipeline-plan"; dialog.append(preview);
@@ -1893,15 +2238,16 @@ function renderPipelinePlan() {
   try {
     const plan=pipelinePlan(mode,$("pipeline-tb-file").value,$("pipeline-ec-file").value);
     const unavailable = plan.find(step=>state.run.stages?.[step.layer]?.unavailable_reason); if (unavailable) throw new Error(state.run.stages[unavailable.layer].unavailable_reason);
-    for (const step of plan) preview.append(node("li","",`${step.layer.replace("_"," ")} · ${step.stem || "全部输入"}`));
+    for (const step of plan) preview.append(node("li","",`${layerDisplay(step.layer)} · ${step.stem || "全部输入"}`));
     if (mode==="all") preview.append(node("li","workflow-note","EC 将采用本次生成的 TB 曲面参数。"));
-    else if (mode==="ec") preview.append(node("li","workflow-note",`TB 参数：${state.run.selected_tb?.filename || "请先在 EC L1 选择 TB 参数"}`));
+    else if (mode==="ec") preview.append(node("li","workflow-note",`TB 参数：${state.run.selected_tb?.filename || `请先在 ${layerDisplay("EC_L1")} 选择 TB 参数`}`));
     $("start-pipeline").disabled=mode==="ec" && !state.run.selected_tb;
   } catch (e) { error.textContent=e.message; error.hidden=false; $("start-pipeline").disabled=true; }
 }
 function openPipelineDialog() {
   document.querySelector(".pipeline-menu").open=false;
   ensurePipelineDialog(); const family=state.layer.slice(0,2), raw=state.run.inventory?.raw || {}, rows=raw.reading_preview?.rows || [];
+  $("pipeline-mode").querySelector('option[value="ec"]').textContent = nativeContract() ? "EC 当前文件 · L0 → corr → L1" : "EC 当前文件 · L0 → L2";
   $("pipeline-mode").value=family==="TB" ? "tb" : "ec";
   for (const type of ["tb","ec"]) {
     const select=clear($("pipeline-"+type+"-file"));
@@ -1935,7 +2281,7 @@ async function runPipeline(plan, mode) {
         for (const point of points) { await selectEcPoint(point); await executeJob(step.layer,{point_id:point.id,stem:step.stem,channel,representative:false,...ecBinningSpec()},false); }
         const current=(state.ecOverview?.points || []).filter(point=>(point.channel==null || point.channel===channel) && ecPointMatchesObservation(point,step.stem));
         if (current.length) await selectEcPoint(current.find(point=>point.id===selectedPointId) || current[0]);
-      } else { const {layer,...spec}=step; const job = await executeJob(layer,{...spec,...(mode!=="all"?{channel,...(layer==="TB_L1"?{fit_channels:[channel]}:{})}:{})},false); if (job?.status === "partial") { notify(`${layer.replace("_"," ")} 有通道计算失败，可用结果已保存；请处理缺失结果后继续。`,"warning"); return; } }
+      } else { const {layer,...spec}=step; const job = await executeJob(layer,{...spec,...(mode!=="all"?{channel,...(layer==="TB_L1"?{fit_channels:[channel]}:{})}:{})},false); if (job?.status === "partial") { notify(`${layerDisplay(layer).replace("_"," ")} 有通道计算失败，可用结果已保存；请处理缺失结果后继续。`,"warning"); return; } }
     }
     notify("流程已完成。","success");
   } finally { setBusy(false); }
@@ -1953,7 +2299,7 @@ function acquisitionStatus(text, error = false) { $("acquisition-status").textCo
 function acquisitionError(error) { acquisitionStatus(error.message || String(error), true); }
 function acquisitionMarkChanged() { if (!acquisitionDraft.profile) return; acquisitionDraft.changed = true; acquisitionDraft.previewValid = false; $("save-acquisition").disabled = true; acquisitionStatus("配置已修改，预览后保存。"); registryRefreshButtons(); }
 function acquisitionSetBusy(busy) { acquisitionDraft.busy = busy; for (const id of ["preview-acquisition", "load-acquisition-preset", "load-event-xml", "load-hk-xml", "use-event-xml-preset", "use-hk-xml-preset", "choose-event-xml-file", "choose-hk-xml-file"]) $(id).disabled = busy || (id === "preview-acquisition" && !acquisitionDraft.profile); $("save-acquisition").disabled = busy || !acquisitionDraft.previewValid; $("acquisition-dialog").setAttribute("aria-busy", String(busy)); registryRefreshButtons(); }
-function acquisitionShowTab(tab) { if (tab === "metadata") acquisitionEnsureMetadata(); for (const name of ["xml", "metadata", "preview"]) { const active = tab === name; $("acquisition-tab-" + name).classList.toggle("active", active); $("acquisition-tab-" + name).setAttribute("aria-selected", String(active)); $("acquisition-panel-" + name).hidden = !active; } $("acquisition-dialog").querySelector(".acquisition-scroll").scrollTop = 0; }
+function acquisitionShowTab(tab) { if (tab === "metadata") acquisitionEnsureMetadata(); for (const name of ["xml", "metadata", "analysis", "preview"]) { const active = tab === name; $("acquisition-tab-" + name).classList.toggle("active", active); $("acquisition-tab-" + name).setAttribute("aria-selected", String(active)); $("acquisition-panel-" + name).hidden = !active; } $("acquisition-dialog").querySelector(".acquisition-scroll").scrollTop = 0; }
 function acquisitionNumber(id, nullable = false) { const raw = $(id).value.trim(); if (raw === "" && nullable) return null; const n = Number(raw); if (raw === "" || !Number.isFinite(n)) throw new Error(`请填写有效数值：${$(id).closest("label")?.firstChild?.textContent || id}`); return n; }
 function acquisitionFormField(holder, key, label, value, numeric = false) { const field = node("label", "", label), input = node("input"); input.id = "profile-" + key; input.type = numeric ? "number" : "text"; if (numeric) input.step = "any"; input.value = Array.isArray(value) ? value.join(", ") : value ?? ""; field.append(input); holder.append(field); }
 function acquisitionRemoveButton(row, label) { const cell = node("td"), button = node("button", "profile-remove-row", "×"); button.type = "button"; button.setAttribute("aria-label", label); button.addEventListener("click", () => { row.remove(); acquisitionMarkChanged(); }); cell.append(button); row.append(cell); }
@@ -1987,6 +2333,8 @@ function acquisitionUpdateModes() {
   $("profile-transform-equations").textContent = `${tempMode === "grid10_signed" ? "温度：t = raw / 256；t > 128 时减去 255。" : "温度：raw × 比例 + 偏移。"} ${biasMode === "grid10_current_drop" ? "偏压：20.57 × 2.5 × Vraw / 4096 − 499 × 2.5 × Iraw / (4096 × 548.88)。" : biasMode === "grid11_current_drop" ? "偏压：Vraw / 1000 − 499 × Iraw × 10⁻⁶。" : "偏压：raw × 比例 + 偏移。"} 多包参数留空时使用解析器默认值。`;
 }
 function acquisitionRenderProfile(profile) {
+  for (const key of ["tb_l1","tb_l2","ec_l1","ec_l2"]) $("contract-"+key).value = JSON.stringify(profile.analysis_config?.[key] || {}, null, 2);
+  $("contract-source-payload").value = profile.source_mapping?.source_payload || state.run?.payload || "14B";
   acquisitionDraft.profile = acquisitionCopy(profile); const parser = profile.parser || {}, conditions = parser.conditions || {}, xml = profile.xml || {}, discovery = profile.discovery || {};
   for (const role of ["event", "hk"]) { $(role + "-xml-path").value = xml[role]?.source_path || ""; $(role + "-xml-text").value = xml[role]?.text || ""; $(role + "-xml-status").textContent = xml[role]?.imported_name ? `浏览器导入 · ${xml[role].imported_name}` : xml[role]?.text ? "已载入 XML 快照" : "未载入"; const select = clear($(role + "-xml-preset")); for (const preset of acquisitionDraft.presets) select.append(new Option(preset.label || preset.id, preset.id)); if (!select.options.length) select.append(new Option("无内置 XML 预设", "")); }
   $("profile-event-tag").value = parser.event_tag || ""; $("profile-hk-tag").value = parser.hk_tag || ""; $("profile-endian").value = parser.endian || "MSB";
@@ -2022,6 +2370,10 @@ function acquisitionReadProfile() {
   profile.discovery.rules = [...$("profile-rule-rows").rows].map((row) => { const item = { ...row._profileOriginal }; for (const input of row.querySelectorAll("[data-key]")) { const key = input.dataset.key, value = input.value.trim(); if (key === "metadata") { if (value) { try { item.metadata = JSON.parse(value); } catch { throw new Error("文件规则常量须为 JSON 对象，例如 {\"exposure_minutes\":60}"); } if (!item.metadata || Array.isArray(item.metadata) || typeof item.metadata !== "object") throw new Error("文件规则常量须为 JSON 对象"); } else delete item.metadata; } else item[key] = value || (key === "metadata_regex" ? null : ""); } return item; });
   profile.discovery.sources = [...$("profile-source-rows").rows].map((row) => { const item = { ...row._profileOriginal }; for (const input of row.querySelectorAll("[data-key]")) { const key = input.dataset.key, raw = input.value.trim(); item[key] = key === "aliases" ? raw.split(",").map((s) => s.trim()).filter(Boolean) : key === "energies_keV" ? raw.split(",").map((s) => s.trim()).filter(Boolean).map((s) => { const value = Number(s); if (!(value > 0)) throw new Error("源能线应填写正数，使用逗号分隔。"); return value; }) : raw; } return item; });
   }
+  if (profile.analysis_contract === "cali_proc@0.5") {
+    profile.analysis_config_text = {};
+    for (const key of ["tb_l1","tb_l2","ec_l1","ec_l2"]) profile.analysis_config_text[key] = $("contract-"+key).value || "{}";
+  }
   return profile;
 }
 function acquisitionEnsureMetadata() {
@@ -2034,12 +2386,12 @@ function acquisitionEnsureMetadata() {
 }
 async function acquisitionOpen() {
   if (!state.run || state.busy) return; if (state.dirty) await saveRevision({}, true);
-  acquisitionDraft.runId = state.run.id; acquisitionDraft.changed = false; acquisitionDraft.profile = null; $("acquisition-dialog").showModal(); acquisitionShowTab("xml"); acquisitionSetBusy(true); acquisitionStatus("正在载入本试算的读取配置…");
+  acquisitionDraft.runId = state.run.id; acquisitionDraft.changed = false; acquisitionDraft.profile = null; $("acquisition-dialog").showModal(); acquisitionShowTab("xml"); acquisitionSetBusy(true); acquisitionStatus("正在载入本任务的读取配置…");
   try { const result = await api(runPath("/acquisition")); if (state.run.id !== acquisitionDraft.runId) return; acquisitionDraft.presets = Array.isArray(result.presets) ? result.presets : Object.entries(result.presets || {}).map(([id, preset]) => ({ id, ...preset })); acquisitionDraft.revision = result.revision; acquisitionDraft.sha256 = result.sha256 || result.hash; acquisitionRenderProfile(result.profile); $("acquisition-identity").textContent = `${state.run.payload} 读取配置`; $("acquisition-version").textContent = `${result.revision ? `修订 ${typeof result.revision === "object" ? result.revision.id || result.revision.version || "已保存" : result.revision}` : "默认读取配置"}`; const select = clear($("acquisition-preset")); select.append(new Option("10B · 波形与电流压降", "10B"), new Option("14B · 默认读取配置", "14B"), new Option("15B · 默认读取配置", "15B")); select.value = state.run.dataset?.profile || state.run.payload; if (!select.value) select.value = "14B"; $("acquisition-reason").value = ""; acquisitionStatus("配置已载入。"); $("acquisition-version").title = acquisitionDraft.sha256 || ""; await registryOpen(result); }
   catch (error) { acquisitionError(error); }
   finally { acquisitionSetBusy(false); }
 }
-async function acquisitionLoadPreset() { acquisitionSetBusy(true); try { const result = await api(`/api/acquisition/defaults?profile=${encodeURIComponent($("acquisition-preset").value)}`); acquisitionRenderProfile(result.profile); acquisitionMarkChanged(); acquisitionStatus("默认预设已载入草稿；保存后才应用于本试算。"); } finally { acquisitionSetBusy(false); } }
+async function acquisitionLoadPreset() { acquisitionSetBusy(true); try { const result = await api(`/api/acquisition/defaults?profile=${encodeURIComponent($("acquisition-preset").value)}`); acquisitionRenderProfile(result.profile); acquisitionMarkChanged(); acquisitionStatus("默认预设已载入草稿；保存后才应用于本任务。"); } finally { acquisitionSetBusy(false); } }
 async function acquisitionLoadXml(role, preset = false) {
   const path = $(role + "-xml-path").value.trim(), id = $(role + "-xml-preset").value; if (!(preset ? id : path)) throw new Error(preset ? "请选择 XML 预设。" : "请填写 XML 的完整路径。");
   acquisitionSetBusy(true); try { const result = await api("/api/xml/read", { method: "POST", body: preset ? { preset: id } : { path } }); $(role + "-xml-text").value = result.text || ""; $(role + "-xml-path").value = result.path || path; if (acquisitionDraft.profile?.xml?.[role]) delete acquisitionDraft.profile.xml[role].imported_name; $(role + "-xml-status").textContent = `${result.tags?.length ?? 0} 个包标签 · ${(result.sha256 || "").slice(0, 8)}`; const tag = $(role === "event" ? "profile-event-tag" : "profile-hk-tag"); if (result.tags?.length === 1) tag.value = result.tags[0]; acquisitionMarkChanged(); } finally { acquisitionSetBusy(false); }
@@ -2061,6 +2413,7 @@ async function acquisitionImportXmlFile(role) {
 function acquisitionDescribeIssue(issue) { if (typeof issue === "string") return issue; if (!issue) return ""; return [issue.event || issue.path || issue.file || issue.key, issue.message || issue.error || issue.reason || issue.detail || (Array.isArray(issue.paths) ? `${issue.role || "输入"} 匹配 ${issue.paths.length} 个文件：${issue.paths.join(", ")}` : "")].filter(Boolean).join(" · ") || JSON.stringify(issue); }
 function acquisitionRenderPreview(result) {
   const messages = clear($("acquisition-preview-messages")), errors = result.errors || [], warnings = result.warnings || [];
+  if (result.impact) { const impact = node("div", "input-config-impact"); impact.append(node("strong", "", "更新范围")); appendInputImpact(impact, result.impact); messages.append(impact); }
   for (const error of errors) messages.append(node("p", "profile-preview-error", acquisitionDescribeIssue(error)));
   for (const warning of warnings) messages.append(node("p", "profile-preview-warning", acquisitionDescribeIssue(warning)));
   for (const [key, label] of [["ambiguous", "存在多重匹配"], ["unmatched", "未配对文件"]]) { const items = result[key]; if (Array.isArray(items) && items.length) { const details = node("details", "profile-advanced"), summary = node("summary", "", `${label} · ${items.length}`); details.append(summary); for (const item of items.slice(0, 80)) details.append(node("p", "profile-preview-warning", acquisitionDescribeIssue(item))); messages.append(details); } }
@@ -2080,13 +2433,13 @@ function acquisitionRenderPreview(result) {
 }
 async function acquisitionPreview() {
   const profile = acquisitionReadProfile(), fingerprint = JSON.stringify(profile); acquisitionSetBusy(true); acquisitionStatus("正在验证 XML 并扫描真实文件配对…"); acquisitionShowTab("preview");
-  try { const result = await api(`/api/runs/${encodeURIComponent(acquisitionDraft.runId)}/acquisition/preview`, { method: "POST", body: { profile } }); acquisitionRenderPreview(result); const current = JSON.stringify(acquisitionReadProfile()); acquisitionDraft.previewFingerprint = fingerprint; acquisitionDraft.previewValid = !(result.errors || []).length && current === fingerprint; acquisitionStatus(acquisitionDraft.previewValid ? "当前草稿已校验，可保存为本试算的读取配置版本。" : current !== fingerprint ? "校验期间草稿已修改，请重新预览。" : "校验发现错误，请修改配置后重新预览。", !acquisitionDraft.previewValid); }
+  try { const result = await api(`/api/runs/${encodeURIComponent(acquisitionDraft.runId)}/acquisition/preview`, { method: "POST", body: { profile } }); acquisitionRenderPreview(result); const current = JSON.stringify(acquisitionReadProfile()); acquisitionDraft.previewFingerprint = fingerprint; acquisitionDraft.previewValid = !(result.errors || []).length && current === fingerprint; acquisitionStatus(acquisitionDraft.previewValid ? "当前草稿已校验，可保存为本任务的读取配置版本。" : current !== fingerprint ? "校验期间草稿已修改，请重新预览。" : "校验发现错误，请修改配置后重新预览。", !acquisitionDraft.previewValid); }
   finally { acquisitionSetBusy(false); }
 }
 async function acquisitionSave() {
   const profile = acquisitionReadProfile(); if (!acquisitionDraft.previewValid || JSON.stringify(profile) !== acquisitionDraft.previewFingerprint) { acquisitionMarkChanged(); throw new Error("当前草稿尚未校验，请先预览与校验。"); }
   acquisitionSetBusy(true); acquisitionStatus("正在保存读取配置与 XML 版本快照…");
-  try { const result = await api(`/api/runs/${encodeURIComponent(acquisitionDraft.runId)}/acquisition`, { method: "PATCH", body: { profile, reason: $("acquisition-reason").value.trim() || "载荷协议与物理标签读取配置修订" } }); if (state.run.id === acquisitionDraft.runId) { state.run = result.run || result; state.surface = null; state.ecOverview = null; state.spectrum = null; state.point = null; renderRun(); await loadSurfaceSafely(); } acquisitionDraft.changed = false; $("acquisition-dialog").close(); notify("读取配置已保存，重新解包后应用。", "success"); }
+  try { const result = await api(`/api/runs/${encodeURIComponent(acquisitionDraft.runId)}/acquisition`, { method: "PATCH", body: { profile, reason: $("acquisition-reason").value.trim() || "载荷协议与物理标签读取配置修订" } }); if (state.run.id === acquisitionDraft.runId) { state.run = result.run || result; state.surface = null; state.ecOverview = null; state.spectrum = null; state.point = null; renderRun(); await loadSurfaceSafely(); } acquisitionDraft.changed = false; $("acquisition-dialog").close(); notify("读取配置已保存。", "success"); }
   finally { acquisitionSetBusy(false); }
 }
 function acquisitionParseDelimited(text) {
@@ -2100,7 +2453,18 @@ for (const id of ["close-acquisition", "cancel-acquisition"]) $(id).addEventList
 $("acquisition-dialog").addEventListener("cancel", (event) => { if (acquisitionDraft.busy) event.preventDefault(); });
 $("acquisition-dialog").addEventListener("input", (event) => { if (event.target.type !== "file" && event.target.id !== "acquisition-reason" && event.target.id !== "profile-manifest-import") acquisitionMarkChanged(); });
 $("acquisition-dialog").addEventListener("change", (event) => { if (["profile-condition-mode", "profile-discovery-mode", "profile-temp-mode", "profile-bias-mode", "profile-hk-selection"].includes(event.target.id)) acquisitionUpdateModes(); if (event.target.type !== "file" && event.target.id !== "acquisition-reason") acquisitionMarkChanged(); });
-for (const tab of ["xml", "metadata", "preview"]) { const button = $("acquisition-tab-" + tab); button.addEventListener("click", () => acquisitionShowTab(tab)); button.addEventListener("keydown", (event) => { if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return; event.preventDefault(); const tabs = ["xml", "metadata", "preview"], index = event.key === "Home" ? 0 : event.key === "End" ? 2 : (tabs.indexOf(tab) + (event.key === "ArrowLeft" ? 2 : 1)) % 3; acquisitionShowTab(tabs[index]); $("acquisition-tab-" + tabs[index]).focus(); }); }
+for (const tab of ["xml", "metadata", "analysis", "preview"]) {
+  const button = $("acquisition-tab-" + tab);
+  button.addEventListener("click", () => acquisitionShowTab(tab));
+  button.addEventListener("keydown", (event) => {
+    if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+    event.preventDefault();
+    const tabs = ["xml", "metadata", "analysis", "preview"];
+    const index = event.key === "Home" ? 0 : event.key === "End" ? tabs.length - 1
+      : (tabs.indexOf(tab) + (event.key === "ArrowLeft" ? tabs.length - 1 : 1)) % tabs.length;
+    acquisitionShowTab(tabs[index]); $("acquisition-tab-" + tabs[index]).focus();
+  });
+}
 for (const role of ["event", "hk"]) { $("load-" + role + "-xml").addEventListener("click", () => acquisitionLoadXml(role).catch(acquisitionError)); $("use-" + role + "-xml-preset").addEventListener("click", () => acquisitionLoadXml(role, true).catch(acquisitionError)); $("choose-" + role + "-xml-file").addEventListener("click", () => $(role + "-xml-file").click()); $(role + "-xml-file").addEventListener("change", () => acquisitionImportXmlFile(role).catch(acquisitionError)); }
 $("load-acquisition-preset").addEventListener("click", () => acquisitionLoadPreset().catch(acquisitionError));
 $("preview-acquisition").addEventListener("click", () => acquisitionPreview().catch(acquisitionError)); $("save-acquisition").addEventListener("click", () => acquisitionSave().catch(acquisitionError));
@@ -2123,6 +2487,12 @@ $("cancel-new-run").addEventListener("click", () => $("new-run-dialog").close())
 $("new-run-form").addEventListener("submit", createRun);
 $("new-run-form").addEventListener("input", () => { $("dataset-create-error").hidden=true; });
 $("run-select").addEventListener("change", handleError((event) => openRun(event.target.value)));
+$("dataset-open-run").addEventListener("click", handleError(async () => {
+  const id = $("dataset-run-select").value;
+  if (!id) return;
+  $("new-run-dialog").close();
+  await openRun(id);
+}));
 $("payload").addEventListener("change", handleError(async (event) => { const payload = event.target.value; const remembered = localStorage.getItem(`grid-workbench-payload:${payload}`); const runs = (state.bootstrap.runs || []).filter(item => item.payload === payload); const run = runs.find(item => item.id === remembered) || runs[0]; if (run) await openRun(run.id); else openCreateDialog(payload); }));
 $("channel").addEventListener("change", handleError(event => selectChannel(Number(event.target.value))));
 $("l1-file-search").addEventListener("input", renderL1Workspace);
@@ -2158,6 +2528,11 @@ $("tab-jobs").addEventListener("click", () => showTab("jobs"));
 $("dismiss-message")?.addEventListener("click", () => { $("message").hidden = true; $("dismiss-message").hidden = true; });
 $("surface-mode").addEventListener("change", handleError(async (event) => { state.surfaceMode = event.target.value; await renderTBSurface(); await highlightSelectedPoint(); }));
 $("ec-detail-mode").addEventListener("change", handleError(renderEcOverview));
+$("ec-axis-scale").value = localStorage.getItem("grid-workbench-ec-scale") === "linear" ? "linear" : "log";
+$("ec-axis-scale").addEventListener("change", handleError(async () => {
+  localStorage.setItem("grid-workbench-ec-scale", $("ec-axis-scale").value);
+  await renderEcOverview();
+}));
 $("dataset-select").addEventListener("change", updateSelectedDataset);
 $("scan-datasets").addEventListener("click", () => scanDatasets().catch(datasetError));
 for (const id of ["dataset-raw-dir", "dataset-product-dir"]) $(id).addEventListener("input", datasetPathsChanged);
@@ -2178,5 +2553,40 @@ for (const view of ["residual", "comparison"]) {
 let resizeTimer;
 window.addEventListener("resize", () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(resizeCharts, 100); });
 $("records-drawer")?.addEventListener("toggle", () => requestAnimationFrame(resizeCharts));
+$("choose-layer-result").addEventListener("click", handleError(() => openLayerInputChooser(null, "result")));
+$("update-affected-layers").addEventListener("click", handleError(updateAffectedLayers));
+for (const id of ["close-layer-input", "cancel-layer-input"]) $(id).addEventListener("click", closeLayerInputChooser);
+$("layer-input-dialog").addEventListener("cancel", event => { event.preventDefault(); closeLayerInputChooser(); });
+for (const tab of document.querySelectorAll("[data-input-origin]")) {
+  tab.addEventListener("click", () => {
+    if (inputSelection.busy) return;
+    inputSelection.origin = tab.dataset.inputOrigin; inputSelection.candidate = null; inputSelection.follow = false; inputSelection.impact = null; ++inputSelection.previewToken;
+    $("input-task-filter").value = ""; $("input-candidate-details").hidden = true; $("input-scope-panel").hidden = true; $("input-impact").hidden = true;
+    renderInputCandidates(); setInputChoiceBusy(false);
+  });
+  tab.addEventListener("keydown", event => {
+    if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+    event.preventDefault(); const tabs = [...document.querySelectorAll("[data-input-origin]")], index = tabs.indexOf(tab);
+    const target = event.key === "Home" ? 0 : event.key === "End" ? tabs.length - 1 : (index + (event.key === "ArrowLeft" ? tabs.length - 1 : 1)) % tabs.length;
+    tabs[target].click(); tabs[target].focus();
+  });
+}
+$("input-candidate-search").addEventListener("input", renderInputCandidates);
+$("input-task-filter").addEventListener("change", renderInputCandidates);
+for (const id of ["input-scope-observations", "input-scope-channels"]) $(id).addEventListener("change", () => previewLayerInputChoice().catch(layerInputError));
+function inputApplyError(error) { if (inputContextCurrent()) layerInputError(error); else messageError(error); }
+$("apply-layer-input").addEventListener("click", () => applyLayerInputChoice(false).catch(inputApplyError));
+$("apply-update-layer-input").addEventListener("click", () => applyLayerInputChoice(true).catch(inputApplyError));
+$("import-input-tb").addEventListener("click", () => { closeLayerInputChooser(); $("dependency-toolbar").hidden = false; $("tb-import-path").closest?.("details")?.setAttribute("open", ""); $("tb-import-path").focus(); });
 window.addEventListener("beforeunload", (event) => { if (state.dirty) { event.preventDefault(); event.returnValue = ""; } });
-bootstrap().catch((error) => { $("connection-label").textContent = state.bootstrap ? "服务已连接 · 试算恢复失败" : "本地服务连接失败"; messageError(error); });
+bootstrap().catch((error) => { $("connection-label").textContent = state.bootstrap ? "服务已连接 · 任务恢复失败" : "本地服务连接失败"; messageError(error); });
+
+$("load-contract-profile").addEventListener("click", handleError(async () => {
+  if (!state.run?.dataset?.raw_dir) throw new Error("请先选择原始数据目录。");
+  acquisitionSetBusy(true);
+  try {
+    const result = await api("/api/contracts/profile", {method:"POST",body:{payload:state.run.payload,source_payload:$("contract-source-payload").value,raw_dir:state.run.dataset.raw_dir}});
+    acquisitionRenderProfile(result.profile); acquisitionMarkChanged(); acquisitionShowTab("analysis");
+  } finally { acquisitionSetBusy(false); }
+}));
+for (const key of ["tb_l1","tb_l2","ec_l1","ec_l2"]) $("contract-"+key).addEventListener("input", acquisitionMarkChanged);
