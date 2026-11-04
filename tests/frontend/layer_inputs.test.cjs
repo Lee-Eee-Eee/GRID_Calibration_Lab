@@ -24,7 +24,7 @@ function controller() {
   function element(id) { if (!elements.has(id)) { const item = new Element(); item.id = id; } return elements.get(id); }
   const tabs = ['shared','current','task'].map(origin => { const tab = element(`origin-${origin}`); tab.dataset.inputOrigin = origin; return tab; });
   const context = vm.createContext({
-    document: { getElementById:element, createElement:() => new Element(), querySelectorAll:selector => selector === '[data-input-origin]' ? tabs : [], querySelector:selector => element(selector), body:new Element() },
+    document: { getElementById:element, createElement:tag => Object.assign(new Element(), {tagName:tag.toUpperCase()}), querySelectorAll:selector => selector === '[data-input-origin]' ? tabs : [], querySelector:selector => element(selector), body:new Element() },
     window: { addEventListener() {} },
     Option: class extends Element { constructor(text, value) { super(); this.text = text; this.value = value; } },
     localStorage: {getItem:() => null, setItem() {}}, fetch:() => new Promise(() => {}),
@@ -51,9 +51,25 @@ test('compact input summaries render two EC dependencies without fetching produc
     ],selected_result:{label:'校正结果',version:'r3'}}};renderLayerInputs();`);
   assert.equal(ui.element('layer-inputs').children.length, 2);
   assert.equal(ui.element('layer-inputs').children[1].children[0].textContent, 'TB L2');
-  assert.match(ui.element('layer-inputs').children[1].children[1].textContent, /温偏复核/);
+  assert.match(ui.element('layer-inputs').children[1].children[1].children[0].textContent, /温偏复核/);
   assert.equal(ui.element('layer-result-label').textContent, '结果 · r3');
   assert.equal(ui.run('state.calls'), 0);
+});
+
+test('the selected input is one accessible picker that opens its exact slot', async () => {
+  const ui = controller();
+  ui.run(`state.run.layer_inputs={EC_L1:{slots:[{key:'tb',label:'TB L2',follow_current:true}]}};
+    state.opened=[];openLayerInputChooser=async slot=>state.opened.push(slot);renderLayerInputs();`);
+  const row = ui.element('layer-inputs').children[0], picker = row.children[1];
+  assert.equal(row.children.length, 2);
+  assert.equal(picker.tagName, 'BUTTON');
+  assert.equal(picker.getAttribute('aria-haspopup'), 'dialog');
+  assert.equal(picker.getAttribute('aria-controls'), 'layer-input-dialog');
+  assert.match(picker.getAttribute('aria-label'), /TB L2.*跟随本任务 TB/);
+  await picker.listeners.click[0]();
+  assert.equal(ui.run('state.opened.join()'), 'tb');
+  ui.run('state.busy=true;renderLayerInputs();');
+  assert.equal(ui.element('layer-inputs').children[0].children[1].disabled, true);
 });
 
 test('candidate filtering respects source, task, search and real coverage', () => {

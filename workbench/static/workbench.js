@@ -241,10 +241,15 @@ function renderLayerInputs() {
       if (scope && ((scope.observations || scope.stems || []).length || scope.channels?.length)) source.textContent += ` · ${inputScopeDescription(scope)}`;
       source.title = selected?.product_root || selected?.path || "";
     }
-    const change = node("button", "text-button", "更换"); change.type = "button"; change.disabled = state.busy;
-    change.setAttribute("aria-label", `更换${slot.label || slot.layer}输入`);
+    const change = node("button", "layer-input-picker"); change.type = "button"; change.disabled = state.busy;
+    change.dataset.inputSlot = slot.key;
+    change.setAttribute("aria-label", `更换${slot.label || slot.layer}输入，当前：${source.textContent}`);
+    change.setAttribute("aria-haspopup", "dialog");
+    change.setAttribute("aria-controls", "layer-input-dialog");
+    const indicator = node("span", "layer-input-indicator"); indicator.setAttribute("aria-hidden", "true");
+    change.append(source, indicator);
     change.addEventListener("click", handleError(() => slot.key === "raw" ? openCreateDialog() : openLayerInputChooser(slot.key)));
-    row.append(source, change); holder.append(row);
+    row.append(change); holder.append(row);
   }
   const result = summary.selected_result;
   $("layer-result-label").textContent = result ? result.version === "current" ? "当前结果" : `结果 · ${inputVersionLabel(result) || shortDate(result.created_at)}` : "结果";
