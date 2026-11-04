@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#f5f6f7">
+  <meta name="theme-color" content="#f6f8fa">
   <title>天格 GRID · 标定工作台</title>
   <link rel="icon" href="/static/brand/favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/static/workbench.css">
@@ -13,15 +13,22 @@
 </head>
 <body>
   <header class="topbar">
-    <a class="brand" href="/" aria-label="天格 GRID 标定工作台首页"><img class="brand-logo" src="/static/brand/grid-logo.svg" width="96" height="48" alt="天格计划 GRID"></a>
+    <a class="brand" href="/" aria-label="天格 GRID 标定工作台首页"><img class="brand-logo" src="/static/brand/grid-logo.svg" width="96" height="48" alt="天格计划 GRID"><h1 class="product-name">标定工作台</h1></a>
     <div class="run-controls">
-      <label for="run-select" class="sr-only">标定任务</label>
-      <select id="run-select"><option value="">选择标定任务</option></select>
-      <button id="dataset-settings" class="button">选择数据 / 产品</button>
-      <button id="acquisition-settings" class="button" disabled>解包与读取设置</button>
-      <button id="reference-spectra" class="button">参考能谱</button>
-      <button id="new-run" class="button" title="沿用当前数据与读取预设创建标定任务">创建标定任务</button>
-      <button id="save-run" class="button" disabled>保存修订</button>
+      <div class="task-controls" role="group" aria-label="标定任务">
+        <label for="run-select" class="sr-only">标定任务</label>
+        <select id="run-select"><option value="">选择标定任务</option></select>
+        <button id="new-run" class="button" title="沿用当前数据与读取预设创建标定任务">创建标定任务</button>
+      </div>
+      <div class="tools-menu">
+        <button id="toggle-workspace-tools" class="button tools-toggle" type="button" aria-controls="workspace-tools" aria-expanded="false">工具 <svg class="ui-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.25" aria-hidden="true"><path d="m4 6 4 4 4-4"/></svg></button>
+        <div id="workspace-tools" class="utility-controls" role="group" aria-label="数据与设置">
+        <button id="dataset-settings" class="button quiet"><svg class="ui-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.25" aria-hidden="true"><path d="M1.75 4.5V3.25A1.25 1.25 0 0 1 3 2h3l1.5 1.75H13A1.25 1.25 0 0 1 14.25 5v7.75H1.75z"/></svg><span>选择数据 / 产品</span></button>
+        <button id="acquisition-settings" class="button quiet" disabled><svg class="ui-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.25" aria-hidden="true"><path d="M2 4h12M2 12h12M5 1.75v4.5M11 9.75v4.5"/><path d="M4 6.25h2M10 9.75h2"/></svg><span>解包与读取设置</span></button>
+        <button id="reference-spectra" class="button quiet"><svg class="ui-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.25" aria-hidden="true"><path d="M2 2.25v11.5h12M3.5 10.75h2l1.25-5.5 1.5 6 1.5-3 1.25 2.5h2"/></svg><span>参考能谱</span></button>
+        </div>
+      </div>
+      <div class="revision-controls"><button id="save-run" class="button" disabled>保存修订</button></div>
     </div>
   </header>
 
@@ -37,7 +44,7 @@
 
   <div class="app-shell">
     <main>
-      <div class="workspace-heading"><h1>标定工作台</h1><span id="run-identity" class="mono">runs / —</span></div>
+      <div class="workspace-heading"><span id="run-identity">标定工作台</span></div>
       <div class="feedback-bar"><div id="message" class="notice" role="status" aria-live="polite" hidden></div><button id="dismiss-message" aria-label="关闭操作提示" hidden>×</button></div>
       <section id="empty-state" class="empty-state" hidden><h2>开始标定</h2><button id="create-first-run" class="button primary">选择数据</button></section>
 
@@ -71,14 +78,13 @@
           <div id="unpack-progress" class="unpack-progress" role="status" aria-live="polite" hidden></div>
         </section>
         <div id="dependency-banner" class="dependency-banner" hidden></div>
-        <div id="dependency-toolbar" class="dependency-toolbar" hidden><label for="tb-version-select">TB L2 校正参数</label><select id="tb-version-select"><option value="">正在读取参数包…</option></select><button id="apply-tb-version" class="button small">采用此版本</button><span id="tb-binding-state"></span><details class="tb-import"><summary>导入参数包</summary><div class="path-input"><input id="tb-import-path" aria-label="TB L2 JSON 完整路径" placeholder="TB L2 JSON 完整路径"><button id="import-tb-version" class="button small">导入并采用</button></div></details></div>
-        <section id="l1-quality-overview" class="panel l1-quality-overview" aria-labelledby="l1-quality-title" hidden>
-          <div class="panel-heading"><h3 id="l1-quality-title">拟合质量</h3><span id="l1-quality-channel" class="sr-only">CH 0</span></div>
-          <div id="l1-quality-counts" class="l1-quality-counts" role="status" aria-live="polite"></div>
+        <details id="dependency-toolbar" class="dependency-toolbar" hidden><summary><span>TB 校正参数</span><span id="dependency-summary"></span><span class="disclosure-action">更换</span></summary><div class="dependency-controls"><label for="tb-version-select" class="sr-only">TB L2 校正参数</label><select id="tb-version-select"><option value="">正在读取参数包…</option></select><button id="apply-tb-version" class="button small">采用此版本</button><span id="tb-binding-state"></span><details class="tb-import"><summary>导入参数包</summary><div class="path-input"><input id="tb-import-path" aria-label="TB L2 JSON 完整路径" placeholder="TB L2 JSON 完整路径"><button id="import-tb-version" class="button small">导入并采用</button></div></details></div></details>
+        <details id="l1-quality-overview" class="panel l1-quality-overview" aria-labelledby="l1-quality-title" hidden>
+          <summary class="panel-heading"><h3 id="l1-quality-title">拟合质量</h3><span id="l1-quality-channel" class="sr-only">CH 0</span><span id="l1-quality-counts" class="l1-quality-counts" role="status" aria-live="polite"></span></summary>
           <div id="l1-quality-chart" class="chart l1-quality-chart" aria-label="当前通道的实测温度偏压与拟合质量"></div>
           <p id="l1-quality-note" class="plot-caption"></p>
           <details id="l1-quality-unlocated" class="l1-quality-unlocated" hidden><summary>缺少实测坐标的工况</summary><div id="l1-quality-unlocated-list"></div></details>
-        </section>
+        </details>
         <section id="ec-source-workbench" class="panel ec-source-workbench" aria-label="放射源多峰配置" hidden>
           <div class="panel-heading"><div><h3>放射源能线</h3><p id="ec-source-caption"></p></div><span id="ec-source-channel" class="sr-only"></span></div>
           <div class="ec-source-toolbar"><label for="ec-spectrum-select">源谱文件</label><select id="ec-spectrum-select"><option value="">选择放射源谱</option></select><label for="ec-source-name">放射源</label><input id="ec-source-name" aria-label="放射源名称" placeholder="例如 Na22"></div>

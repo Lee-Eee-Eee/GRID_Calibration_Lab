@@ -15,11 +15,11 @@ const state = { bootstrap: null, run: null, layer: "TB_L0", channel: 0, surface:
 const inputSelection = { token: 0, previewToken: 0, runId: null, layer: null, slot: null, mode: "input", origin: "shared", data: null, candidate: null, follow: false, impact: null, busy: false };
 const statusNames = { idle: "未运行", pending: "未运行", not_run: "未运行", queued: "排队中", running: "运行中", succeeded: "计算成功", success: "计算成功", completed: "计算成功", partial: "部分完成", failed: "计算失败", stale: "依赖待更新", historical: "仅历史参考" };
 const plotConfig = { responsive: true, displaylogo: false, showLink: false, modeBarButtonsToRemove: ["select2d", "lasso2d", "autoScale2d", "toggleSpikelines", "sendDataToCloud", "sendChartToCloud"], toImageButtonOptions: { format: "png", scale: 2 } };
-const chartFont = { family: 'Arial, "Microsoft YaHei", sans-serif', size: 12, color: "#586572" };
-const numericFont = { ...chartFont, family: '"Times New Roman", serif' };
-const chartColors = { ink: "#34414d", blue: "#2457a7", fit: "#b54b37", excluded: "#a46c13", muted: "#929da7", grid: "#e3e7eb", border: "#c4ccd4" };
-const axisStyle = { tickfont: numericFont, gridcolor: chartColors.grid, linecolor: chartColors.border, showline: true, ticks: "outside", ticklen: 3, tickcolor: chartColors.border, zeroline: false, automargin: true };
-const chartHover = { bgcolor: "#ffffff", bordercolor: "#c4ccd4", font: { ...chartFont, color: "#18242e" }, align: "left" };
+const chartFont = { family: 'Arial, "Microsoft YaHei", sans-serif', size: 12, color: "#59636e" };
+const numericFont = { ...chartFont, family: '"Times New Roman", serif', size: 12 };
+const chartColors = { ink: "#424a53", blue: "#2457a7", fit: "#b54b37", excluded: "#9a6700", muted: "#929da7", grid: "#eaeef2", border: "#d1d9e0" };
+const axisStyle = { tickfont: numericFont, gridcolor: chartColors.grid, linecolor: chartColors.border, showline: true, ticks: "outside", ticklen: 3, tickcolor: chartColors.border, nticks: 6, zeroline: false, automargin: true };
+const chartHover = { bgcolor: "#ffffff", bordercolor: "#d1d9e0", font: { ...chartFont, color: "#1f2328" }, align: "left" };
 
 function node(tag, className, value) { const el = document.createElement(tag); if (className) el.className = className; if (value !== undefined && value !== null) el.textContent = String(value); return el; }
 function clear(el) { el.replaceChildren(); return el; }
@@ -566,6 +566,8 @@ function renderDependencies() {
   const displayedTbLabel = ecLayer ? `TB 参数：${displayedTb ? versionText(displayedTb) : "未选择"}` : `版本 ${versionText(current)}`;
   $("tb-version").textContent = displayedTbLabel;
   $("tb-version").title = displayedTbLabel;
+  $("dependency-summary").textContent = displayedTb?.filename || "未选择参数包";
+  $("dependency-summary").title = displayedTbLabel;
   const banner = $("dependency-banner");
   banner.hidden = !state.run.dependency_stale;
   banner.textContent = `本次 EC 产物与选定 TB 参数或当前配置不一致，需要从 EC L1 重新校正。`;
@@ -752,7 +754,7 @@ async function renderTBSurface() {
   const data = state.surface; const points = data.points || []; const traces = [];
   const residualMode = state.surfaceMode === "residual";
   const residualMax = Math.max(.1, ...points.map((p) => Math.abs(residualPercent(p))).filter(Number.isFinite));
-  if (data.grid?.gain?.length && !residualMode) traces.push({ type: "surface", x: data.grid.temp, y: data.grid.bias, z: data.grid.gain, colorscale: [[0, "#e2e8f0"], [.5, "#b5c5d7"], [1, "#718eaf"]], opacity: .46, showscale: false, hoverinfo: "skip", contours: { z: { show: false } }, lighting: { ambient: .85, diffuse: .55, roughness: 1, specular: .05 }, name: "当前拟合曲面" });
+  if (data.grid?.gain?.length && !residualMode) traces.push({ type: "surface", x: data.grid.temp, y: data.grid.bias, z: data.grid.gain, colorscale: [[0, "#eaeef2"], [.5, "#b8c7d8"], [1, "#718eaf"]], opacity: .38, showscale: false, hoverinfo: "skip", contours: { z: { show: false } }, lighting: { ambient: 1, diffuse: .3, roughness: 1, specular: 0 }, name: "当前拟合曲面" });
   if (points.length) {
     const xx = [], yy = [], zz = [];
     for (const p of points) { if (!Number.isFinite(residualPercent(p))) continue; const prediction = p.predicted ?? p.center / (1 + residualPercent(p) / 100); xx.push(p.temp, p.temp, null); yy.push(p.bias, p.bias, null); zz.push(residualMode ? 0 : prediction, residualMode ? residualPercent(p) : p.center, null); }
@@ -761,10 +763,10 @@ async function renderTBSurface() {
   const groups = [{ excluded: false, color: chartColors.blue, name: "参与拟合", matches: isUsed }, { excluded: true, color: chartColors.excluded, name: "人工屏蔽", matches: isExcluded }, { excluded: false, color: chartColors.muted, name: "无可用参数", matches: (point) => !isExcluded(point) && pointUsage(point) === false }];
   for (const group of groups) {
     const values = points.filter(group.matches);
-    traces.push({ type: "scatter3d", mode: "markers", x: values.map((p) => p.temp), y: values.map((p) => p.bias), z: values.map((p) => residualMode ? residualPercent(p) : p.center), customdata: values.map((p) => p.id || p.stem), text: values.map((p) => `${p.stem}<br>${group.name}<br>峰位 ${number(p.center, 2)} ADC · 残差 ${number(residualPercent(p), 3)}%`), hovertemplate: "%{text}<br>T = %{x:.2f} °C · V = %{y:.3f} V<extra></extra>", marker: { size: 4.5, color: group.excluded || group.color === chartColors.muted ? group.color : values.map(residualPercent), colorscale: [[0,"#2b65ac"],[.5,"#f1f3f5"],[1,"#b54b37"]], cmin: -residualMax, cmax: residualMax, showscale: group.name === "参与拟合", colorbar: { title: { text: "残差 / %", font: chartFont }, thickness: 9, len: .65, x: 1, tickfont: { ...numericFont, size: 11 } }, line: { color: "#64778a", width: .8 }, opacity: 1, symbol: group.excluded ? "x" : "circle" }, name: group.name });
+    traces.push({ type: "scatter3d", mode: "markers", x: values.map((p) => p.temp), y: values.map((p) => p.bias), z: values.map((p) => residualMode ? residualPercent(p) : p.center), customdata: values.map((p) => p.id || p.stem), text: values.map((p) => `${p.stem}<br>${group.name}<br>峰位 ${number(p.center, 2)} ADC · 残差 ${number(residualPercent(p), 3)}%`), hovertemplate: "%{text}<br>T = %{x:.2f} °C · V = %{y:.3f} V<extra></extra>", marker: { size: 3.5, color: group.excluded || group.color === chartColors.muted ? group.color : values.map(residualPercent), colorscale: [[0,"#2b65ac"],[.5,"#f1f3f5"],[1,"#b54b37"]], cmin: -residualMax, cmax: residualMax, showscale: group.name === "参与拟合", colorbar: { title: { text: "残差 / %", font: chartFont }, thickness: 9, len: .65, x: 1, tickfont: numericFont }, line: { color: "#64778a", width: .8 }, opacity: 1, symbol: group.excluded ? "x" : "circle" }, name: group.name });
   }
   traces.push(selectedPointTrace(true));
-  const axis = (text) => ({ title: { text, font: chartFont }, tickfont: numericFont, gridcolor: "#dfe4e9", zeroline: false, linecolor: "#c4ccd4", backgroundcolor: "#fafbfc", showbackground: true, showspikes: false });
+  const axis = (text) => ({ title: { text, font: chartFont }, tickfont: numericFont, gridcolor: "#eaeef2", zeroline: false, linecolor: "#d1d9e0", backgroundcolor: "#fcfcfd", showbackground: true, showspikes: false });
   const viewport = surfaceViewport();
   $("surface-chart").dataset.cameraMode = viewport.mode;
   await Plotly.react(plotTarget($("surface-chart")), traces, { margin: { l: 16, r: 65, t: 0, b: 25 }, paper_bgcolor: "#ffffff", font: chartFont, hoverlabel: chartHover, showlegend: false, uirevision: `${state.run.id}-${state.channel}-${viewport.mode}-${state.surfaceMode}`, scene: { xaxis: axis("T / °C"), yaxis: axis("Bias / V"), zaxis: axis(residualMode ? "残差 / %" : "峰位 / ADC"), camera: viewport.camera, aspectratio: { x: 1.5, y: 1, z: .8 } } }, plotConfig);
@@ -1138,7 +1140,7 @@ function ecSourceWindowOverlays() {
     const selected=Number(line.energy_keV)===Number(state.point?.E);
     if(!selected) shapes.push({type:"rect",xref:"x",yref:"paper",x0:bounds.lo,x1:bounds.hi,y0:0,y1:1,fillcolor:"rgba(107,132,166,.04)",line:{color:"#b8c5d6",width:1,dash:"dot"},layer:"below"});
     const center = point?.center ?? line.centers?.[String(state.channel)];
-    annotations.push({x:Number.isFinite(center) ? center : (bounds.lo+bounds.hi)/2,y:1,xref:"x",yref:"paper",text:`${number(line.energy_keV,3)} keV`,showarrow:false,yanchor:"top",yshift:-5,font:{...chartFont,size:10,color:selected?chartColors.fit:"#728294"},bgcolor:"rgba(255,255,255,.85)"});
+    annotations.push({x:Number.isFinite(center) ? center : (bounds.lo+bounds.hi)/2,y:1,xref:"x",yref:"paper",text:`${number(line.energy_keV,3)} keV`,showarrow:false,yanchor:"top",yshift:-5,font:{...chartFont,size:11,color:selected?chartColors.fit:"#728294"},bgcolor:"rgba(255,255,255,.85)"});
   }
   return {shapes,annotations};
 }
@@ -1410,7 +1412,7 @@ async function renderSpectrum() {
   const peak = peakPlotDetails(data), sourceWindows=ecSourceWindowOverlays(); traces.push(...peak.traces);
   const focusedY = state.layer === "EC_L2" && !fullSource ? visibleSpectrumYRange(traces, range, {logarithmic:yType === "log"}) : undefined;
   const rateAxis = state.layer === "EC_L2" ? {range:focusedY,autorange:!focusedY} : {};
-  await Plotly.react(plotTarget(chart), traces, { margin: { l: 55, r: 16, t: editable ? 28 : 14, b: 41 }, font: chartFont, hoverlabel: chartHover, paper_bgcolor: "#fff", plot_bgcolor: "#fff", showlegend: false, xaxis: { ...axisStyle, title: { text: state.layer.startsWith("EC") && state.layer !== "EC_L0" ? "校正 ADC" : "ADC", standoff: 5 }, range }, yaxis: { ...axisStyle, title: { text: data.y_label || (binWidth ? `计数 / ${number(binWidth, 3)} ADC bin` : "计数 / bin"), standoff: 6 }, type:yType, exponentformat: "power", ...rateAxis }, shapes: [...sourceWindows.shapes, ...(editable ? windowShapes(lo, hi) : []), ...peak.shapes], annotations: sourceWindows.annotations, hovermode: "closest", uirevision: `${state.run.id}-${state.channel}-${state.point.id || state.point.stem}` }, plotConfig);
+  await Plotly.react(plotTarget(chart), traces, { margin: { l: 55, r: 16, t: editable ? 28 : 14, b: 41 }, font: chartFont, hoverlabel: chartHover, paper_bgcolor: "#fff", plot_bgcolor: "#fff", showlegend: false, xaxis: { ...axisStyle, title: { text: state.layer.startsWith("EC") && state.layer !== "EC_L0" ? "校正 ADC" : "ADC", standoff: 5 }, range }, yaxis: { ...axisStyle, title: { text: data.y_label || (binWidth ? `计数 / ${number(binWidth, 3)} ADC bin` : "计数 / bin"), standoff: 6 }, type:yType, dtick:yType === "log" ? "D2" : undefined, exponentformat: "power", ...rateAxis }, shapes: [...sourceWindows.shapes, ...(editable ? windowShapes(lo, hi) : []), ...peak.shapes], annotations: sourceWindows.annotations, hovermode: "closest", uirevision: `${state.run.id}-${state.channel}-${state.point.id || state.point.stem}` }, plotConfig);
   if (context !== plotContext()) return;
   if (isPeakReviewLayer()) {
     $("surface-caption").textContent = `${state.point.stem}${state.layer === "EC_L2" ? ` · ${number(state.point.E, 3)} keV` : ""}${binWidth && !rateSpectrum ? ` · ${number(binWidth, 3)} ADC/bin` : ""}`;
@@ -1536,7 +1538,7 @@ async function loadEcSpectrum() {
   preview.append(detail);
   if (data.tb_corrfile) preview.append(node("p", "ec-spectrum-detail", `谱数据记录的 TB 参数：${data.tb_corrfile}`));
   preview.append(node("p", "ec-spectrum-path", data.path || data.source_path || ""));
-  await Plotly.react(chart, [{ type: "scatter", mode: "lines", x: data.x || [], y: (data.y || []).map((v) => v > 0 ? v : null), line: { shape: "hv", color: chartColors.ink, width: 1.2 }, hovertemplate: "ADC %{x:.1f}<br>计数 %{y:.0f}<extra></extra>" }], { margin: { l: 65, r: 25, t: 12, b: 48 }, font: chartFont, hoverlabel: chartHover, paper_bgcolor: "#fff", plot_bgcolor: "#fff", showlegend: false, xaxis: { ...axisStyle, title: { text: `${data.field === "amp_corr" ? "校正后 " : ""}ADC`, standoff: 8 }, range: data.display_range }, yaxis: { ...axisStyle, title: { text: "计数 / bin", standoff: 8 }, type: "log", exponentformat: "power" }, hovermode: "closest" }, plotConfig);
+  await Plotly.react(chart, [{ type: "scatter", mode: "lines", x: data.x || [], y: (data.y || []).map((v) => v > 0 ? v : null), line: { shape: "hv", color: chartColors.ink, width: 1.2 }, hovertemplate: "ADC %{x:.1f}<br>计数 %{y:.0f}<extra></extra>" }], { margin: { l: 65, r: 25, t: 12, b: 48 }, font: chartFont, hoverlabel: chartHover, paper_bgcolor: "#fff", plot_bgcolor: "#fff", showlegend: false, xaxis: { ...axisStyle, title: { text: `${data.field === "amp_corr" ? "校正后 " : ""}ADC`, standoff: 8 }, range: data.display_range }, yaxis: { ...axisStyle, title: { text: "计数 / bin", standoff: 8 }, type: "log", dtick: "D2", exponentformat: "power" }, hovermode: "closest" }, plotConfig);
 }
 
 function windowShapes(lo, hi) { if (!(hi > lo)) return []; return [{ type: "rect", xref: "x", yref: "paper", x0: lo, x1: hi, y0: 0, y1: 1, fillcolor: "rgba(36,87,167,0.045)", line: { width: 0 }, layer: "below" }, ...[lo, hi].map((value) => ({ type: "line", xref: "x", yref: "paper", x0: value, x1: value, y0: 0, y1: 1, line: { color: "#6b84a6", width: 1, dash: "dash" } }))]; }
@@ -1896,7 +1898,7 @@ async function renderRawMain() {
   const data = state.spectrum;
   if (!data) { chartMessage("surface-chart", "正在载入文件列表与真实脉冲谱…"); return; }
   const traces = [{ type: "scatter", mode: "lines", x: data.x || [], y: (data.y || []).map((n) => n > 0 ? n : null), line: { color: chartColors.ink, width: 1.4, shape: "hv" }, hovertemplate: "ADC %{x:.1f}<br>计数 %{y:.0f}<extra></extra>" }];
-  await Plotly.react(plotTarget($("surface-chart")), traces, basicPlotLayout(data.field === "amp_corr" ? "校正 ADC" : "ADC", "计数 / bin", { yaxis: { ...axisStyle, type: "log", title: { text: "计数 / bin" } }, xaxis: { ...axisStyle, title: { text: data.field === "amp_corr" ? "校正 ADC" : "ADC" }, range: data.display_range } }), plotConfig);
+  await Plotly.react(plotTarget($("surface-chart")), traces, basicPlotLayout(data.field === "amp_corr" ? "校正 ADC" : "ADC", "计数 / bin", { yaxis: { ...axisStyle, type: "log", dtick: "D2", title: { text: "计数 / bin" } }, xaxis: { ...axisStyle, title: { text: data.field === "amp_corr" ? "校正 ADC" : "ADC" }, range: data.display_range } }), plotConfig);
   if (context !== plotContext()) return;
   $("surface-caption").textContent = `${data.stem || state.point?.stem} · CH ${state.channel} · ${number(data.n_events ?? data.y?.reduce((a, b) => a + b, 0), 0)} 事件`;
   $("point-count").textContent = `${state.layer === "TB_L0" ? state.surface?.points?.length || 0 : state.ecOverview?.files?.length || 0} 个文件`;
@@ -1985,12 +1987,12 @@ async function renderEcOverview() {
   const x = (p) => l3 ? p.center : p.E, y = (p) => l3 ? p.E : p.center;
   traces.push({ type: "scatter", mode: "markers", x: points.map(x), y: points.map(y), error_y: l3 ? undefined : { type: "data", array: points.map((p) => p.center_err || 0), visible: true, thickness: 1, color: "#6888b1" }, customdata: points.map((p) => p.id), text: points.map((p) => `${p.stem}<br>${number(p.E, 3)} keV · ${ecPointStatus(p)}`), marker: { color: points.map((p) => isExcluded(p) ? chartColors.excluded : pointUsage(p) === false ? chartColors.muted : chartColors.blue), symbol: points.map((p) => isExcluded(p) ? "x" : "circle"), size: 8, line: { color: "#fff", width: .8 } }, name: "真实能峰", hovertemplate: "%{text}<br>横坐标 %{x:.3f}<br>纵坐标 %{y:.3f}<extra></extra>" });
   if (state.point && points.some((p) => p.id === state.point.id)) traces.push({ type: "scatter", mode: "markers", x: [x(state.point)], y: [y(state.point)], customdata: [state.point.id], marker: { size: 13, color: "rgba(0,0,0,0)", line: { color: chartColors.fit, width: 2 } }, hoverinfo: "skip", name: "当前选中" });
-  await Plotly.react(plotTarget($("surface-chart")), traces, basicPlotLayout(l3 ? "校正峰位 / ADC" : "已知能量 / keV", l3 ? "能量 / keV" : "校正峰位 / ADC", { uirevision: `${state.run.id}-${state.layer}-${state.channel}-${scale}`, xaxis: { ...axisStyle, type: scale, title: { text: "校正峰位 / ADC", standoff: 7 }, exponentformat: "power" }, yaxis: { ...axisStyle, type: scale, title: { text: "能量 / keV", standoff: 7 }, exponentformat: "power" } }), plotConfig); if (context !== plotContext()) return; bindEcClicks($("surface-chart"));
+  await Plotly.react(plotTarget($("surface-chart")), traces, basicPlotLayout(l3 ? "校正峰位 / ADC" : "已知能量 / keV", l3 ? "能量 / keV" : "校正峰位 / ADC", { uirevision: `${state.run.id}-${state.layer}-${state.channel}-${scale}`, xaxis: { ...axisStyle, type: scale, dtick: scale === "log" ? "D2" : undefined, title: { text: "校正峰位 / ADC", standoff: 7 }, exponentformat: "power" }, yaxis: { ...axisStyle, type: scale, dtick: scale === "log" ? "D2" : undefined, title: { text: "能量 / keV", standoff: 7 }, exponentformat: "power" } }), plotConfig); if (context !== plotContext()) return; bindEcClicks($("surface-chart"));
   if (context !== plotContext()) return;
   const showResidual = l3 && $("ec-detail-mode").value === "residual";
   const secondary = [{ type: "scatter", mode: "markers", x: points.map((p) => p.E), y: points.map((p) => showResidual ? p.residual_percent ?? (ecPrediction(p) === null ? null : 100 * (ecPrediction(p) - p.E) / p.E) : p.resolution), customdata: points.map((p) => p.id), text: points.map((p) => `${p.stem} · ${number(p.E, 3)} keV<br>${ecPointStatus(p)}`), marker: { color: points.map((p) => isExcluded(p) ? chartColors.excluded : pointUsage(p) === false ? chartColors.muted : chartColors.blue), symbol: points.map((p) => isExcluded(p) ? "x" : "circle"), size: 7 }, hovertemplate: "%{text}<br>%{y:.4f}%<extra></extra>" }];
   if (!showResidual && data.resolution_curve?.x?.length) secondary.unshift({ type: "scatter", mode: "lines", x: data.resolution_curve.x, y: data.resolution_curve.y, line: { color: chartColors.fit, width: 1.6 }, hoverinfo: "skip" });
-  await Plotly.react(plotTarget($("residual-chart")), secondary, basicPlotLayout("能量 / keV", showResidual ? "能量残差 / %" : "分辨率 / %", { margin: { l: 65, r: 25, t: 10, b: 42 }, uirevision: `${state.run.id}-${state.layer}-${state.channel}-${scale}-${showResidual}`, xaxis: { ...axisStyle, type: scale, title: { text: "能量 / keV", standoff: 7 }, exponentformat: "power" }, yaxis: { ...axisStyle, type: "linear", title: { text: showResidual ? "能量残差 / %" : "分辨率 / %" }, zeroline: true, zerolinecolor: "#9daab6" } }), plotConfig); if (context !== plotContext()) return; bindEcClicks($("residual-chart"));
+  await Plotly.react(plotTarget($("residual-chart")), secondary, basicPlotLayout("能量 / keV", showResidual ? "能量残差 / %" : "分辨率 / %", { margin: { l: 65, r: 25, t: 10, b: 42 }, uirevision: `${state.run.id}-${state.layer}-${state.channel}-${scale}-${showResidual}`, xaxis: { ...axisStyle, type: scale, dtick: scale === "log" ? "D2" : undefined, title: { text: "能量 / keV", standoff: 7 }, exponentformat: "power" }, yaxis: { ...axisStyle, type: "linear", title: { text: showResidual ? "能量残差 / %" : "分辨率 / %" }, zeroline: true, zerolinecolor: "#9daab6" } }), plotConfig); if (context !== plotContext()) return; bindEcClicks($("residual-chart"));
   if (context !== plotContext()) return;
   $("surface-caption").textContent = "";
   $("point-count").textContent = `${points.filter(isUsed).length} / ${points.length} 参与 L3`;
@@ -2577,7 +2579,7 @@ for (const id of ["input-scope-observations", "input-scope-channels"]) $(id).add
 function inputApplyError(error) { if (inputContextCurrent()) layerInputError(error); else messageError(error); }
 $("apply-layer-input").addEventListener("click", () => applyLayerInputChoice(false).catch(inputApplyError));
 $("apply-update-layer-input").addEventListener("click", () => applyLayerInputChoice(true).catch(inputApplyError));
-$("import-input-tb").addEventListener("click", () => { closeLayerInputChooser(); $("dependency-toolbar").hidden = false; $("tb-import-path").closest?.("details")?.setAttribute("open", ""); $("tb-import-path").focus(); });
+$("import-input-tb").addEventListener("click", () => { closeLayerInputChooser(); $("dependency-toolbar").hidden = false; $("dependency-toolbar").open = true; $("tb-import-path").closest?.("details")?.setAttribute("open", ""); $("tb-import-path").focus(); });
 window.addEventListener("beforeunload", (event) => { if (state.dirty) { event.preventDefault(); event.returnValue = ""; } });
 bootstrap().catch((error) => { $("connection-label").textContent = state.bootstrap ? "服务已连接 · 任务恢复失败" : "本地服务连接失败"; messageError(error); });
 
@@ -2590,3 +2592,17 @@ $("load-contract-profile").addEventListener("click", handleError(async () => {
   } finally { acquisitionSetBusy(false); }
 }));
 for (const key of ["tb_l1","tb_l2","ec_l1","ec_l2"]) $("contract-"+key).addEventListener("input", acquisitionMarkChanged);
+
+// Disclosures keep supporting analysis available without displacing the spectrum.
+$("l1-quality-overview").addEventListener("toggle", () => { if ($("l1-quality-overview").open) requestAnimationFrame(resizeCharts); });
+
+function setWorkspaceTools(open, returnFocus = false) {
+  const trigger = $("toggle-workspace-tools");
+  trigger.closest(".tools-menu").classList.toggle("open", open);
+  trigger.setAttribute("aria-expanded", String(open));
+  if (returnFocus) trigger.focus();
+}
+$("toggle-workspace-tools").addEventListener("click", () => setWorkspaceTools($("toggle-workspace-tools").getAttribute("aria-expanded") !== "true"));
+$("workspace-tools").addEventListener("click", event => { if (event.target.closest("button")) setWorkspaceTools(false); });
+window.addEventListener("click", event => { if (!event.target?.closest?.(".tools-menu")) setWorkspaceTools(false); });
+window.addEventListener("keydown", event => { if (event.key === "Escape" && $("toggle-workspace-tools").getAttribute("aria-expanded") === "true") setWorkspaceTools(false, true); });
