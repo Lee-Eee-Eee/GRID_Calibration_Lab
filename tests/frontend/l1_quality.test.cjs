@@ -1,4 +1,8 @@
-/* Run with: node --test tests/frontend/l1_quality.test.cjs */
+/* Run with: node --test tests/frontend/l1_quality.test.cjs
+ * DOM, Plotly and API responses are unit-test doubles. Selection route tests
+ * retain production selection/rendering; real HTTP, fitting and restart are
+ * covered by the separate browser integration regression.
+ */
 const assert = require('node:assert/strict');
 const { readFileSync } = require('node:fs');
 const path = require('node:path');
@@ -61,6 +65,7 @@ function controller() {
     renderUnpackWorkspace = () => {}; setBusy = () => {}; renderCurrentStatus = () => {};
     chartMessage = () => {}; messageError = error => { state.testError = error.message; };
     const selected = [];
+    const productionSelectPoint = selectPoint;
     selectPoint = async point => { state.point = point; selected.push(point); };
     const plotCalls = [];
     const plotly = {
@@ -195,6 +200,97 @@ test('click identity selects the exact file and channel and cannot fall back to 
   await ui.run(`selectL1QualityPoint({id:'10B:accepted:0',stem:'rejected',channel:0},${JSON.stringify(context)})`);
   await ui.run(`selectL1QualityPoint({id:'10B:rejected:0',stem:'rejected-extra',channel:0},${JSON.stringify(context)})`);
   assert.equal(ui.run('selected.length'), 1);
+});
+
+test('a normal Plotly click loads the exact channel spectrum and saved window through production selection', async () => {
+  const ui = controller();
+  ui.run(`
+    selectPoint = productionSelectPoint;
+    state.channel = 2;
+    const point = state.l1Overview.files.find(file=>file.stem==='failed').channels.find(row=>row.channel===2);
+    point.fit_status = 'failed'; point.error = 'fit did not converge';
+    state.run.config.windows = { failed: { '2': { lo: 34.125, hi: 83.875 } } };
+    state.run.pending_windows = ['10B:failed:2'];
+    const spectrumRequests = [];
+    api = async path => {
+      spectrumRequests.push(path);
+      return {
+        id:'10B:failed:2', stem:'failed', channel:2, source_path:'fixtures/failed.l0.parquet',
+        x:[40,50,60], y:[3,11,4], n_events:18,
+        histogram_config:{min:0,max:100,bin_width:1},
+        fit:{center:50,window_lo:20,window_hi:90},
+        curve:{x:[40,50,60],y:[2,9,3]}
+      };
+    };
+  `);
+  await ui.run('renderL1QualityOverview()');
+  const chart = ui.element('l1-quality-chart');
+  const identity = chart.data.flatMap(trace => trace.customdata || []).find(point => point.id === '10B:failed:2');
+  assert.ok(identity);
+  assert.equal(typeof chart.plotListeners.plotly_click, 'function');
+  await chart.plotListeners.plotly_click({ points: [{ customdata: identity }] });
+
+  assert.equal(ui.run('state.testError'), undefined);
+  assert.deepEqual(plain(ui.run('spectrumRequests')), [
+    '/api/runs/quality-run/spectrum?stem=failed&channel=2&layer=TB_L1&consumer_layer=TB_L1',
+  ]);
+  assert.equal(ui.run('selected.length'), 0, 'the selection recorder must not replace production selectPoint');
+  assert.equal(ui.run('state.point.id'), '10B:failed:2');
+  assert.equal(ui.run('state.point.channel'), 2);
+  assert.equal(ui.run('state.spectrum.id'), '10B:failed:2');
+  assert.equal(ui.run('state.spectrum.source_path'), 'fixtures/failed.l0.parquet');
+  assert.equal(ui.element('point-select').value, '10B:failed:2');
+  assert.equal(ui.element('window-lo').value, '34.125');
+  assert.equal(ui.element('window-hi').value, '83.875');
+  assert.equal(ui.element('window-status').textContent, '待重拟合');
+  assert.equal(ui.run('savedView().points["TB:2"].id'), '10B:failed:2');
+  const spectrumChart = ui.element('surface-chart');
+  assert.deepEqual(plain(spectrumChart.data[0].y), [3,11,4]);
+  assert.deepEqual(plain(spectrumChart.data.find(trace => trace.name === '峰 + 背景拟合').y), [2,9,3]);
+  assert.equal(spectrumChart.layout.shapes[0].x0, 34.125);
+  assert.equal(spectrumChart.layout.shapes[0].x1, 83.875);
+});
+
+test('the unlocated-condition button loads its own spectrum and fit window without inventing map coordinates', async () => {
+  const ui = controller();
+  ui.run(`
+    selectPoint = productionSelectPoint;
+    const spectrumRequests = [];
+    api = async path => {
+      spectrumRequests.push(path);
+      return {
+        id:'10B:no-coordinate:0', stem:'no-coordinate', channel:0,
+        source_path:'fixtures/no-coordinate.l0.parquet',
+        x:[30,50,70], y:[2,17,5], n_events:24,
+        histogram_config:{min:0,max:100,bin_width:1},
+        fit:{center:50,window_lo:26.25,window_hi:74.75},
+        curve:{x:[30,50,70],y:[2,16,4]}
+      };
+    };
+  `);
+  await ui.run('renderL1QualityOverview()');
+  assert.equal(ui.element('l1-quality-unlocated').hidden, false);
+  const plotted = ui.element('l1-quality-chart').data.flatMap(trace => trace.customdata || []);
+  assert.equal(plotted.some(point => point.stem === 'no-coordinate'), false);
+  const buttons = ui.element('l1-quality-unlocated-list').children;
+  assert.equal(buttons.length, 1);
+  assert.match(buttons[0].textContent, /^no-coordinate · CH 0/);
+  await buttons[0].listeners.click[0]({});
+
+  assert.equal(ui.run('state.testError'), undefined);
+  assert.deepEqual(plain(ui.run('spectrumRequests')), [
+    '/api/runs/quality-run/spectrum?stem=no-coordinate&channel=0&layer=TB_L1&consumer_layer=TB_L1',
+  ]);
+  assert.equal(ui.run('selected.length'), 0);
+  assert.equal(ui.run('state.point.id'), '10B:no-coordinate:0');
+  assert.equal(ui.run('state.point.temp'), null);
+  assert.equal(ui.run('state.spectrum.id'), '10B:no-coordinate:0');
+  assert.equal(ui.run('state.spectrum.source_path'), 'fixtures/no-coordinate.l0.parquet');
+  assert.equal(ui.element('window-lo').value, '26.250');
+  assert.equal(ui.element('window-hi').value, '74.750');
+  assert.equal(ui.run('savedView().points["TB:0"].id'), '10B:no-coordinate:0');
+  assert.deepEqual(plain(ui.element('surface-chart').data[0].y), [2,17,5]);
+  assert.deepEqual(plain(ui.element('surface-chart').data.find(trace => trace.name === '峰 + 背景拟合').y), [2,16,4]);
 });
 
 test('map clicks captured before channel, run, layer or load changes cannot select a stale point', async () => {

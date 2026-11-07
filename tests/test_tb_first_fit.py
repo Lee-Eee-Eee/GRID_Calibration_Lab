@@ -8,18 +8,24 @@ import pytest
 from calibration_lib.common.utils import read_json, write_json, write_parquet
 from calibration_lib.workbench.acquisition import default_profile
 from calibration_lib.workbench.compute import ComputeAdapter
+from calibration_lib.workbench.l1_review import overview
 from calibration_lib.workbench.service import Workbench
 
 HISTOGRAM = {"min": 0.0, "max": 16384.0, "bin_width": 6.0}
 
 
-def l0(products, stem="case", profile_sha=None):
+def l0(products, stem="case", profile_sha=None, *, centers=None, hk_data=None):
+    """Seed real spectra; optional centers identify channels and {} omits HK."""
     rng = np.random.default_rng(765)
     amp = np.r_[rng.normal(2200, 85, 6000), rng.uniform(1300, 3000, 800)]
+    if centers is not None and len(centers) != 4:
+        raise ValueError("centers must contain four channel peak positions")
+    amplitudes = (np.tile(amp, 4) if centers is None else
+                  np.concatenate([amp + float(center) - 2200 for center in centers]))
     frame = pd.DataFrame(
         {
             "channel": np.repeat(np.arange(4), len(amp)),
-            "amp": np.tile(amp, 4),
+            "amp": amplitudes,
             "crc_check": True,
             "utc": np.tile(np.linspace(0, 60, len(amp)), 4),
         }
@@ -33,7 +39,7 @@ def l0(products, stem="case", profile_sha=None):
             "temp_err": [0.1] * 4,
             "bias": [27, 27.5, 28, 28.5],
             "bias_err": [0.01] * 4,
-        },
+        } if hk_data is None else hk_data,
         meta_key="hk_data",
         schema_metadata={
             "acquisition": {
@@ -154,6 +160,10 @@ def test_failed_first_fit_can_be_inspected_revised_and_refit_with_actual_process
         assert after_failure["fit"] is None and after_failure["curve"] is None
         assert after_failure["last_fit_attempt"]["status"] == "failed"
         assert all(p["fit_status"] == "not_fitted" for p in service.surface(run["id"], 0)["points"])
+        failed_point = overview(service, run["id"])["files"][0]["channels"][0]
+        assert failed_point["id"] == "10B:case:0"
+        assert failed_point["fit_status"] == "failed" and failed_point["error"]
+        assert failed_point["pending_window"]
         # The same L0 point accepts a revised window without any dummy L1 JSON.
         bounds = {"lo": 1900.125, "hi": 2510.875}
         updated = service.patch(run["id"], {"windows": {"case": {"0": bounds}}})
@@ -174,6 +184,26 @@ def test_failed_first_fit_can_be_inspected_revised_and_refit_with_actual_process
         assert fitted["fit"]["window_hi"] == bounds["hi"]
         assert fitted["curve"]["x"] and fitted["histogram_config"] == HISTOGRAM
         assert service.surface(run["id"], 0)["points"][0]["fit_status"] == "fitted"
+        # Rebuild the service: neither configuration nor curves may come from
+        # the first Workbench's adapter, cached inventory, or in-memory jobs.
+        service.close()
+        service = Workbench(tmp_path)
+        reopened = service.spectrum(run["id"], "case", 0)
+        assert reopened["id"] == fitted["id"] == "10B:case:0"
+        assert reopened["draft_window"] == reopened["default_window"] == bounds
+        assert reopened["fit"] == fitted["fit"]
+        assert reopened["last_fit_attempt"]["id"] == succeeded["id"]
+        assert reopened["last_fit_attempt"]["status"] == "succeeded"
+        assert reopened["x"] == fitted["x"] and reopened["y"] == fitted["y"]
+        assert reopened["curve"] == fitted["curve"]
+        channels = overview(service, run["id"])["files"][0]["channels"]
+        assert channels[0]["id"] == reopened["id"]
+        assert channels[0]["fit_status"] == "fitted" and not channels[0]["pending_window"]
+        assert channels[1]["fit_status"] == "not_fitted"
+        assert channels[3]["fit_status"] == "model_pending"
+        untouched = service.spectrum(run["id"], "case", 1)
+        assert untouched["fit"] is untouched["curve"] is None
+        assert untouched["last_fit_attempt"] is None
         # A later failure keeps the saved result as a distinct prior artifact.
         old_center = fitted["fit"]["center"]
         service.patch(run["id"], {"windows": {"case": {"0": bad_window}}})
@@ -189,5 +219,26 @@ def test_failed_first_fit_can_be_inspected_revised_and_refit_with_actual_process
         assert current["last_fit_attempt"]["status"] == "failed"
         assert current["last_fit_attempt"]["id"] == failed_again["id"]
         assert service.view(run["id"])["stages"]["TB_L1"]["status"] == "failed"
+        # A later failed attempt must survive another rebuild while the prior
+        # successful curve keeps its own saved fit window.
+        service.close()
+        service = Workbench(tmp_path)
+        restored = service.spectrum(run["id"], "case", 0)
+        assert restored["id"] == "10B:case:0"
+        assert restored["draft_window"] == bad_window
+        assert restored["default_window"] == bounds
+        assert restored["fit"]["center"] == old_center
+        assert restored["fit"]["window_lo"] == bounds["lo"]
+        assert restored["fit"]["window_hi"] == bounds["hi"]
+        assert restored["curve"] == fitted["curve"]
+        assert restored["last_fit_attempt"]["id"] == failed_again["id"]
+        assert restored["last_fit_attempt"]["status"] == "failed"
+        restored_point = overview(service, run["id"])["files"][0]["channels"][0]
+        assert restored_point["id"] == restored["id"]
+        assert restored_point["fit_status"] == "failed" and restored_point["pending_window"]
+        assert restored_point["attempt"]["job_id"] == failed_again["id"]
+        assert restored_point["center"] == old_center
+        assert service.view(run["id"])["stages"]["TB_L1"]["status"] == "failed"
+        assert service.spectrum(run["id"], "case", 1) == untouched
     finally:
         service.close()

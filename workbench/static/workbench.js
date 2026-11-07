@@ -531,8 +531,8 @@ function renderCurrentStatus() {
   if (state.layer === "TB_L1" && state.point) {
     const item = state.l1Overview?.files?.find(file => file.stem === state.point.stem)?.channels?.[state.channel];
     if (item && !["queued","running"].includes(status)) {
-      status = item.fit_status === "fitted" ? "succeeded" : ["failed","suspect","rejected"].includes(item.fit_status) ? "stale" : "idle";
-      label = item.pending_window ? "窗口待拟合" : item.fit_status === "failed" ? "当前通道计算失败" : hasQualityWarning(item) ? "已拟合 · 疑似问题" : item.fit_status === "fitted" ? "已拟合" : "待拟合";
+      status = item.fit_status === "failed" ? "failed" : item.fit_status === "fitted" ? "succeeded" : ["suspect","rejected"].includes(item.fit_status) ? "stale" : "idle";
+      label = item.fit_status === "failed" ? "当前通道计算失败" : item.pending_window ? "窗口待拟合" : hasQualityWarning(item) ? "已拟合 · 疑似问题" : item.fit_status === "fitted" ? "已拟合" : "待拟合";
     }
   }
   if (!job && state.point) label = state.point.fit_status === "not_parsed" ? "待解包" : state.point.fit_status === "not_fitted" ? "待拟合" : isUnpackLayer() || state.layer === "EC_L1" ? "已有谱" : "已有拟合";

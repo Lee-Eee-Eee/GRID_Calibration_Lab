@@ -162,4 +162,6 @@ uv run --extra workbench --extra dev pytest tests -q
 node --test tests/frontend/*.test.cjs
 ```
 
+质量图选点、真实局部拟合和重开恢复的浏览器回归见 [测试说明](tests/README.md)。
+
 问题和改进建议可通过 [Issues](https://github.com/Lee-Eee-Eee/GRID_Calibration_Lab/issues) 反馈。

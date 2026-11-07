@@ -837,6 +837,61 @@ test('current file status ignores a failed fit of another file or pipeline layer
   assert.equal(ui.element('stage-status').textContent, '计算成功');
 });
 
+test('a failed L1 attempt takes precedence over a pending window while its prior curve remains inspectable', () => {
+  const ui = controller();
+  ui.run(`
+    state.layer = 'TB_L1'; state.channel = 0;
+    state.point = { id:'14B:case:0',stem:'case',channel:0,fit_status:'failed' };
+    state.run.config.windows = {case:{'0':{lo:12000,hi:13000}}};
+    state.run.pending_windows = ['14B:case:0'];
+    state.run.jobs = [
+      {id:'old-success',layer:'TB_L1',status:'succeeded',config:{only:['case'],fit_channels:[0]}},
+      {id:'failed-again',layer:'TB_L1',status:'failed',config:{only:['case'],fit_channels:[0]}}
+    ];
+    state.l1Overview = {files:[{stem:'case',channels:[{
+      ...state.point,pending_window:true,error:'No resolved photopeak',
+      center:2200,fit_quality:{accepted:true}
+    }]}]};
+    state.spectrum = {
+      fit:{center:2200,window_lo:1900.125,window_hi:2510.875,fit_quality:{accepted:true}},
+      curve:{x:[2100,2200,2300],y:[10,50,10]},
+      last_fit_attempt:{id:'failed-again',status:'failed'}
+    };
+    renderCurrentStatus();
+  `);
+  assert.equal(ui.run('currentLayerJob().id'), 'failed-again');
+  assert.equal(ui.element('stage-status').textContent, '当前通道计算失败');
+  assert.equal(ui.element('stage-status').className, 'badge failed');
+  assert.equal(ui.run('state.run.pending_windows.includes(state.point.id)'), true);
+  assert.equal(ui.run('state.spectrum.last_fit_attempt.status'), 'failed');
+  assert.equal(ui.run('state.spectrum.fit.center'), 2200);
+  assert.deepEqual(JSON.parse(ui.run('JSON.stringify(state.spectrum.curve)')), {
+    x:[2100,2200,2300], y:[10,50,10],
+  });
+});
+
+test('a model-pending plastic channel retains its own neutral status despite saved windows and another channel failure', () => {
+  const ui = controller();
+  ui.run(`
+    state.run.payload = '10B'; state.run.dataset.profile = '10B';
+    state.layer = 'TB_L1'; state.channel = 3;
+    state.point = {id:'10B:case:3',stem:'case',channel:3,fit_status:'model_pending'};
+    state.run.config.windows = {case:{'3':{lo:1900,hi:2500}}};
+    state.run.pending_windows = ['10B:case:3'];
+    state.run.jobs = [{id:'failed-other-channel',layer:'TB_L1',status:'failed',
+      config:{only:['case'],fit_channels:[0]}}];
+    state.l1Overview = {files:[{stem:'case',channels:[{},{},{},{...state.point,pending_window:true}]}]};
+    state.spectrum = {fit:null,curve:null,unsupported_spectral_model:'塑料闪烁体 · 康普顿响应，拟合方案待定'};
+    renderCurrentStatus();
+  `);
+  assert.equal(ui.run('currentLayerJob()'), undefined);
+  assert.equal(ui.element('stage-status').textContent, '拟合方案待定');
+  assert.equal(ui.element('stage-status').className, 'badge neutral');
+  assert.equal(ui.run('state.point.fit_status'), 'model_pending');
+  assert.equal(ui.run('state.spectrum.fit'), null);
+  assert.equal(ui.run('state.spectrum.curve'), null);
+});
+
 test('output path matching cannot treat a different numeric energy as the selected file', () => {
   const ui = controller();
   ui.run(`
