@@ -5,7 +5,7 @@
 本仓库使用两个远程：
 
 - `origin`：`https://github.com/Lee-Eee-Eee/GRID_Calibration_Lab.git`
-- `tsinghua`：`https://git.tsinghua.edu.cn/litao24/GRID_Calibration_Lab.git`
+- `tsinghua`：`git@git.tsinghua.edu.cn:litao24/GRID_Calibration_Lab.git`（SSH 认证；项目页面：`https://git.tsinghua.edu.cn/litao24/GRID_Calibration_Lab`）
 
 用户说“push”时，默认将**当前本地分支**以同名分支分别推送到 `origin` 和 `tsinghua`。
 
